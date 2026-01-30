@@ -19,7 +19,7 @@ st.set_page_config(page_title="Streamlit 지도 시각화 — Step-by-Step", lay
 
 # 0-1) (선택) Mapbox Directions 토큰: 경로 단계(STEP 5)에서만 사용
 #      OSM 배경지도는 토큰 없이 동작합니다.
-MAPBOX_TOKEN = "pk.eyJ1Ijoia2lteWVvbmp1biIsImEiOiJjbWVnZHNyZmsxMTVpMmtzZzMzMTU5ZGFyIn0.esI42zH2s8c_Dy26yj4uHw"
+MAPBOX_TOKEN = "pk.eyJ1Ijoia2lteWVvbmp1biIsImEiOiJjbWwwcWVyOG8wZGZpM2RxeWJ0eW9rM3dmIn0.b2idyXvhTgzd4mHQT7Nr8A"
 
 # 1) 사이드바: 수업 단계 선택 ----------------------------------
 st.sidebar.markdown("### 강의 단계 (STEP)")
@@ -306,3 +306,4 @@ if STEP.startswith("5)"):
     # 선택이 없으면 기본 지도만 표시
     st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=view, tooltip=point_tooltip), use_container_width=True)
     st.info("설명: 포인트를 2개 이상 선택하면 '출발 → 도착' 경로가 그려지고, 경유지를 추가하면 (via N)로 표시됩니다. 경로에 마우스를 올리면 라벨이 툴팁으로 뜹니다.")
+
