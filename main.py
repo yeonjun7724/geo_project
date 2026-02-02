@@ -68,6 +68,7 @@ def load_grid_shp(path: str) -> gpd.GeoDataFrame:
     else:
         gdf["pop"] = 0.0
 
+    # geometry clean
     gdf["geometry"] = gdf.geometry.buffer(0)
 
     keep_cols = [GRID_ID_COL, "pop", "geometry"]
@@ -77,7 +78,7 @@ def load_grid_shp(path: str) -> gpd.GeoDataFrame:
 @st.cache_data(show_spinner=True)
 def load_uncovered(path: str) -> gpd.GeoDataFrame:
     if not os.path.exists(path):
-        # uncovered가 없을 수도 있으니 빈 gdf로 처리 가능
+        # uncovered가 없을 수도 있으니 빈 gdf로 처리
         return gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs=TARGET_CRS)
 
     gdf = gpd.read_file(path)
@@ -88,13 +89,14 @@ def load_uncovered(path: str) -> gpd.GeoDataFrame:
     return gdf[["geometry"]].copy()
 
 
+# ✅ 핵심: GeoDataFrame은 hash 불가 → 인자명을 '_'로 시작시켜 Streamlit이 해시하지 않게 함
 @st.cache_data(show_spinner=False)
-def attach_is_uncovered(gdf_grid_5179: gpd.GeoDataFrame, gdf_unc_5179: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    g = gdf_grid_5179.copy()
-    if len(gdf_unc_5179) == 0:
+def attach_is_uncovered(_gdf_grid_5179: gpd.GeoDataFrame, _gdf_unc_5179: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    g = _gdf_grid_5179.copy()
+    if len(_gdf_unc_5179) == 0:
         g["is_uncovered"] = False
         return g
-    unc_union = gdf_unc_5179.geometry.union_all()
+    unc_union = _gdf_unc_5179.geometry.union_all()
     g["is_uncovered"] = g.geometry.intersects(unc_union)
     return g
 
@@ -117,22 +119,23 @@ def build_osm_graph(aoi_poly_4326, network_type="walk"):
 
 
 @st.cache_resource(show_spinner=False)
-def add_travel_time(G, speed_m_per_s: float):
+def add_travel_time(_G, speed_m_per_s: float):
     # edge travel_time(초) 추가
-    for u, v, k, data in G.edges(keys=True, data=True):
+    for u, v, k, data in _G.edges(keys=True, data=True):
         length_m = float(data.get("length", 0.0))
         data["travel_time"] = length_m / float(speed_m_per_s) if speed_m_per_s > 0 else np.inf
-    return G
+    return _G
 
 
+# ✅ NetworkX graph(G)도 hash 불가 → 인자명을 '_'로 시작시켜 Streamlit이 해시하지 않게 함
 @st.cache_data(show_spinner=False)
-def compute_reachable_edges_gdf(G, source_node: int, cutoff_sec: int):
+def compute_reachable_edges_gdf(_G, source_node: int, cutoff_sec: int):
     # 5분 내 도달 가능한 노드 집합
-    lengths = nx.single_source_dijkstra_path_length(G, source_node, cutoff=float(cutoff_sec), weight="travel_time")
+    lengths = nx.single_source_dijkstra_path_length(_G, source_node, cutoff=float(cutoff_sec), weight="travel_time")
     reachable_nodes = set(lengths.keys())
 
     # 노드 기반 induced subgraph
-    SG = G.subgraph(reachable_nodes).copy()
+    SG = _G.subgraph(reachable_nodes).copy()
 
     # edge gdf로 변환
     gdf_edges = ox.graph_to_gdfs(SG, nodes=False, edges=True, fill_edge_geometry=True)
@@ -160,6 +163,7 @@ with st.spinner("데이터 로딩 중..."):
 
 # OSMnx AOI는 전수 격자 bounds 기반으로 1회 구성
 aoi_poly_4326 = bounds_polygon_4326_from_grid(gdf_grid, buffer_m=4000.0)
+
 
 # =========================================================
 # 4) Sidebar Controls
@@ -208,6 +212,7 @@ def compute_kpi_for_gid(gdf_grid_5179: gpd.GeoDataFrame, sel_gid: str, radius_m:
         "uncovered_rate": unc_rate,
         "gdf_in_5179": gdf_in
     }
+
 
 kpi = compute_kpi_for_gid(gdf_grid, sel_gid, RADIUS_M)
 if kpi is None:
@@ -363,7 +368,6 @@ with right:
 
     # 네트워크 edge GeoJson
     if len(gdf_edges) > 0:
-        # tooltip에 보여줄 필드 최소화
         tooltip_fields = []
         if "length_m" in gdf_edges.columns:
             tooltip_fields.append("length_m")
@@ -382,7 +386,7 @@ with right:
     else:
         st.info("5분 내 도달 가능한 네트워크가 비어 있습니다. AOI/속도/위치 범위를 확인하세요.")
 
-    # (참고) KPI 반경 링도 같이 보여주기
+    # (참고) KPI 반경 링
     circle_ll = gpd.GeoSeries([kpi["circle_5179"]], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
     folium.GeoJson(
         {"type": "Feature", "properties": {}, "geometry": circle_ll.__geo_interface__},
@@ -404,4 +408,3 @@ with st.expander("데이터/그래프 진단"):
     st.write("grid columns:", list(gdf_grid.columns))
     st.write("OSM graph nodes:", len(G.nodes), "edges:", len(G.edges))
     st.write("AOI (4326) bounds:", aoi_poly_4326.bounds)
-
