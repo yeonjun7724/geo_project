@@ -24,8 +24,8 @@ from shapely.geometry import box
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 
-GRID_SHP = os.path.join(DATA_DIR, "grid_all.shp")          # 전수 격자 SHP 세트
-UNCOVERED_GPKG = os.path.join(DATA_DIR, "uncovered.gpkg")  # 비커버 폴리곤(선택)
+GRID_SHP = os.path.join(DATA_DIR, "nlsp_021001001.shp")          # 전수 격자 SHP 세트
+UNCOVERED_GPKG = os.path.join(DATA_DIR, "demo_uncovered.gpkg")  # 비커버 폴리곤(선택)
 
 GRID_ID_COL = "gid"
 GRID_POP_COL = "val"     # 전수 격자 인구 컬럼(없으면 pop=0 처리)
@@ -404,3 +404,4 @@ with st.expander("데이터/그래프 진단"):
     st.write("grid columns:", list(gdf_grid.columns))
     st.write("OSM graph nodes:", len(G.nodes), "edges:", len(G.edges))
     st.write("AOI (4326) bounds:", aoi_poly_4326.bounds)
+
