@@ -1,309 +1,406 @@
 # app.py
-# ------------------------------------------------------------
-# Streamlit 지도 시각화 튜토리얼 (함수 없이, 스텝바이스텝 스크립트)
-# - STEP 1: 데이터 로드 & 미리보기
-# - STEP 2: 산점 지도
-# - STEP 3: 성능 제어(표본·반경·불투명도)
-# - STEP 4: 히트맵 전환
-# - STEP 5: 경로(PathLayer, Mapbox Directions로 실제 도로 경로)
-# ------------------------------------------------------------
+import os
+import warnings
+warnings.filterwarnings("ignore")
+
+import numpy as np
+import pandas as pd
+import geopandas as gpd
 
 import streamlit as st
-import pandas as pd
-import numpy as np
 import pydeck as pdk
-import json, os, requests
 
-# 0) 페이지·레이아웃 기본 설정 --------------------------------
-st.set_page_config(page_title="Streamlit 지도 시각화 — Step-by-Step", layout="wide")
+import folium
+from streamlit_folium import st_folium
 
-# 0-1) (선택) Mapbox Directions 토큰: 경로 단계(STEP 5)에서만 사용
-#      OSM 배경지도는 토큰 없이 동작합니다.
-MAPBOX_TOKEN = "pk.eyJ1Ijoia2lteWVvbmp1biIsImEiOiJjbWwwcWVyOG8wZGZpM2RxeWJ0eW9rM3dmIn0.b2idyXvhTgzd4mHQT7Nr8A"
+import osmnx as ox
+import networkx as nx
+from shapely.geometry import box
 
-# 1) 사이드바: 수업 단계 선택 ----------------------------------
-st.sidebar.markdown("### 강의 단계 (STEP)")
-STEP = st.sidebar.selectbox(
-    "시연 단계",
-    ["1) 데이터 로드 & 미리보기",
-     "2) 산점 지도",
-     "3) 성능 제어(표본·반경·불투명도)",
-     "4) 히트맵 전환",
-     "5) 경로(PathLayer, Mapbox Directions)"],
-    index=0
-)
 
-# 2) 사이드바: 데이터 업로드 또는 서울 25개 자치구 샘플 ---------
-upl = st.sidebar.file_uploader("CSV / JSON / GEOJSON 업로드", type=["csv","json","geojson"])
-use_seoul_sample = st.sidebar.checkbox("서울 25개 자치구 샘플(point_sample.json) 사용", value=(upl is None))
+# =========================================================
+# 0) PATHS (GitHub 기준: app.py와 같은 폴더)
+# =========================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
 
-# 3) 데이터 준비 (업로드 > 샘플JSON > 임시 난수) -----------------
-if upl is not None:
-    name = upl.name.lower()
-    if name.endswith(".csv"):
-        df = pd.read_csv(upl)
+GRID_SHP = os.path.join(DATA_DIR, "grid_all.shp")          # 전수 격자 SHP 세트
+UNCOVERED_GPKG = os.path.join(DATA_DIR, "uncovered.gpkg")  # 비커버 폴리곤(선택)
+
+GRID_ID_COL = "gid"
+GRID_POP_COL = "val"     # 전수 격자 인구 컬럼(없으면 pop=0 처리)
+TARGET_CRS = 5179        # 분석용
+MAP_CRS = 4326           # 지도용
+
+
+# =========================================================
+# 1) Streamlit Page
+# =========================================================
+st.set_page_config(page_title="5강 | Streamlit + Pydeck + OSMnx", layout="wide")
+
+st.title("🚲 5강 | Streamlit 대시보드: 격자 선택 → KPI 즉석 계산 → 좌(Pydeck) / 우(5분 네트워크)")
+st.caption("우측은 선택 격자 중심점에서 시작해 OSMnx+NetworkX로 5분(300초) 내 도달 가능한 네트워크 라인을 즉석 계산해 표시한다.")
+
+
+# =========================================================
+# 2) Loaders (캐시)
+# =========================================================
+@st.cache_data(show_spinner=True)
+def load_grid_shp(path: str) -> gpd.GeoDataFrame:
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"GRID_SHP not found: {path}")
+
+    gdf = gpd.read_file(path)
+    if gdf.crs is None:
+        raise ValueError("GRID_SHP CRS is None. (.prj 확인)")
+
+    gdf = gdf.to_crs(TARGET_CRS)
+
+    if GRID_ID_COL not in gdf.columns:
+        raise ValueError(f"GRID_ID_COL='{GRID_ID_COL}' not found in grid shapefile")
+
+    gdf[GRID_ID_COL] = gdf[GRID_ID_COL].astype(str)
+
+    if GRID_POP_COL in gdf.columns:
+        gdf["pop"] = pd.to_numeric(gdf[GRID_POP_COL], errors="coerce").fillna(0).astype(float)
+    elif "pop" in gdf.columns:
+        gdf["pop"] = pd.to_numeric(gdf["pop"], errors="coerce").fillna(0).astype(float)
     else:
-        # JSON/NDJSON/GeoJSON 포괄 처리
-        try:
-            df = pd.read_json(upl, lines=False)
-        except ValueError:
-            upl.seek(0)
-            df = pd.read_json(upl, lines=True)
-        except Exception:
-            upl.seek(0)
-            data = json.load(upl)
-            if isinstance(data, dict) and "features" in data:
-                rows = []
-                for feat in data["features"]:
-                    geom = feat.get("geometry", {})
-                    props = feat.get("properties", {}) or {}
-                    if geom.get("type") == "Point":
-                        lon, lat = geom.get("coordinates", [None, None])
-                        rows.append({"lat": lat, "lon": lon, **props})
-                df = pd.DataFrame(rows)
-            else:
-                df = pd.DataFrame(data)
-elif use_seoul_sample:
-    # 실행 폴더에 point_sample.json(서울 25개 자치구 중심점)이 있으면 사용
-    try:
-        with open("point_sample.json", "r", encoding="utf-8") as f:
-            df = pd.DataFrame(json.load(f))
-    except:
-        # 샘플 JSON이 없다면 임시 난수로 대체(데모용)
-        rng = np.random.default_rng(7)
-        df = pd.DataFrame({
-            "lat": 37.55 + 0.03*rng.standard_normal(200),
-            "lon": 126.98 + 0.04*rng.standard_normal(200),
-            "weight": rng.integers(1, 5, 200),
-            "label": "random"
-        })
-else:
-    # 기존 CSV 샘플 파일이 있으면 사용
-    try:
-        df = pd.read_csv("points_sample.csv")
-    except:
-        rng = np.random.default_rng(7)
-        df = pd.DataFrame({
-            "lat": 37.55 + 0.1*rng.random(1000),
-            "lon": 126.97 + 0.1*rng.random(1000),
-            "weight": rng.integers(1, 5, 1000),
-            "label": "random"
-        })
+        gdf["pop"] = 0.0
 
-# 4) 열 표준화 및 좌표 유효성 체크 ------------------------------
-#    다양한 컬럼명을 'lat','lon'으로 통일하고 잘못된 좌표 제거
-df = df.rename(columns={c.lower(): "lat" if c.lower() in ["lat","latitude","위도"]
-                                   else "lon" if c.lower() in ["lon","lng","longitude","경도"]
-                                   else c for c in df.columns})
-df = df.dropna(subset=["lat","lon"])
-df = df[(df["lat"].between(-90,90)) & (df["lon"].between(-180,180))]
+    gdf["geometry"] = gdf.geometry.buffer(0)
 
-# 5) 타이틀 및 데이터 유효성 ------------------------------------
-st.title("Streamlit 지도 시각화 — Step-by-Step")
-if len(df) == 0:
-    st.error("표시할 점 데이터가 없습니다.")
+    keep_cols = [GRID_ID_COL, "pop", "geometry"]
+    return gdf[keep_cols].copy()
+
+
+@st.cache_data(show_spinner=True)
+def load_uncovered(path: str) -> gpd.GeoDataFrame:
+    if not os.path.exists(path):
+        # uncovered가 없을 수도 있으니 빈 gdf로 처리 가능
+        return gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs=TARGET_CRS)
+
+    gdf = gpd.read_file(path)
+    if gdf.crs is None:
+        raise ValueError("UNCOVERED_GPKG CRS is None.")
+    gdf = gdf.to_crs(TARGET_CRS)
+    gdf["geometry"] = gdf.geometry.buffer(0)
+    return gdf[["geometry"]].copy()
+
+
+@st.cache_data(show_spinner=False)
+def attach_is_uncovered(gdf_grid_5179: gpd.GeoDataFrame, gdf_unc_5179: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    g = gdf_grid_5179.copy()
+    if len(gdf_unc_5179) == 0:
+        g["is_uncovered"] = False
+        return g
+    unc_union = gdf_unc_5179.geometry.union_all()
+    g["is_uncovered"] = g.geometry.intersects(unc_union)
+    return g
+
+
+def bounds_polygon_4326_from_grid(gdf_grid_5179: gpd.GeoDataFrame, buffer_m: float = 2500.0):
+    # 전수 격자 전체 bounds에 buffer를 준 뒤 4326 폴리곤으로 만들어 OSMnx AOI로 사용
+    minx, miny, maxx, maxy = gdf_grid_5179.total_bounds
+    b = box(minx, miny, maxx, maxy).buffer(float(buffer_m))
+    poly_4326 = gpd.GeoSeries([b], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
+    return poly_4326
+
+
+@st.cache_resource(show_spinner=True)
+def build_osm_graph(aoi_poly_4326, network_type="walk"):
+    # OSMnx 그래프는 무거우니 리소스 캐시(세션에서 유지)
+    ox.settings.log_console = False
+    G = ox.graph_from_polygon(aoi_poly_4326, network_type=network_type, simplify=True)
+    G = ox.add_edge_lengths(G)
+    return G
+
+
+@st.cache_resource(show_spinner=False)
+def add_travel_time(G, speed_m_per_s: float):
+    # edge travel_time(초) 추가
+    for u, v, k, data in G.edges(keys=True, data=True):
+        length_m = float(data.get("length", 0.0))
+        data["travel_time"] = length_m / float(speed_m_per_s) if speed_m_per_s > 0 else np.inf
+    return G
+
+
+@st.cache_data(show_spinner=False)
+def compute_reachable_edges_gdf(G, source_node: int, cutoff_sec: int):
+    # 5분 내 도달 가능한 노드 집합
+    lengths = nx.single_source_dijkstra_path_length(G, source_node, cutoff=float(cutoff_sec), weight="travel_time")
+    reachable_nodes = set(lengths.keys())
+
+    # 노드 기반 induced subgraph
+    SG = G.subgraph(reachable_nodes).copy()
+
+    # edge gdf로 변환
+    gdf_edges = ox.graph_to_gdfs(SG, nodes=False, edges=True, fill_edge_geometry=True)
+    if gdf_edges.crs is None:
+        gdf_edges = gdf_edges.set_crs(MAP_CRS)
+    else:
+        gdf_edges = gdf_edges.to_crs(MAP_CRS)
+
+    # 보기 편하게 컬럼 정리
+    if "length" in gdf_edges.columns:
+        gdf_edges["length_m"] = gdf_edges["length"].astype(float)
+    if "travel_time" in gdf_edges.columns:
+        gdf_edges["time_s"] = gdf_edges["travel_time"].astype(float)
+
+    return gdf_edges.reset_index(drop=True)
+
+
+# =========================================================
+# 3) Data Load
+# =========================================================
+with st.spinner("데이터 로딩 중..."):
+    gdf_grid = load_grid_shp(GRID_SHP)
+    gdf_unc = load_uncovered(UNCOVERED_GPKG)
+    gdf_grid = attach_is_uncovered(gdf_grid, gdf_unc)
+
+# OSMnx AOI는 전수 격자 bounds 기반으로 1회 구성
+aoi_poly_4326 = bounds_polygon_4326_from_grid(gdf_grid, buffer_m=4000.0)
+
+# =========================================================
+# 4) Sidebar Controls
+# =========================================================
+st.sidebar.header("설정")
+
+all_gids = gdf_grid[GRID_ID_COL].tolist()
+sel_gid = st.sidebar.selectbox("전수 격자 gid 선택", options=all_gids, index=0)
+
+RADIUS_M = st.sidebar.slider("KPI 반경(m) (좌측/상단 KPI용)", 300, 3000, 1250, 50)
+
+speed_mps = st.sidebar.slider("보행 속도(m/s) (우측 네트워크 시간 계산)", 0.8, 2.0, 1.4, 0.1)
+cutoff_min = st.sidebar.slider("네트워크 컷오프(분)", 1, 15, 5, 1)
+cutoff_sec = int(cutoff_min * 60)
+
+st.sidebar.caption("우측 네트워크는 travel_time=length/speed로 계산한다.")
+
+
+# =========================================================
+# 5) KPI 즉석 계산 (선택 gid 중심점 반경)
+# =========================================================
+def compute_kpi_for_gid(gdf_grid_5179: gpd.GeoDataFrame, sel_gid: str, radius_m: float):
+    row = gdf_grid_5179.loc[gdf_grid_5179[GRID_ID_COL] == str(sel_gid)]
+    if len(row) == 0:
+        return None
+
+    sel_poly = row.geometry.iloc[0]
+    sel_center = sel_poly.centroid
+    circle = sel_center.buffer(float(radius_m))
+
+    in_circle = gdf_grid_5179.geometry.intersects(circle)
+    gdf_in = gdf_grid_5179.loc[in_circle, [GRID_ID_COL, "pop", "is_uncovered", "geometry"]].copy()
+
+    total_pop = float(gdf_in["pop"].sum())
+    unc_pop = float(gdf_in.loc[gdf_in["is_uncovered"] == True, "pop"].sum())
+    cov_pop = total_pop - unc_pop
+    unc_rate = (unc_pop / total_pop) if total_pop > 0 else 0.0
+
+    return {
+        "sel_center_5179": sel_center,
+        "circle_5179": circle,
+        "cells": int(len(gdf_in)),
+        "total_pop": total_pop,
+        "uncovered_pop": unc_pop,
+        "covered_pop": cov_pop,
+        "uncovered_rate": unc_rate,
+        "gdf_in_5179": gdf_in
+    }
+
+kpi = compute_kpi_for_gid(gdf_grid, sel_gid, RADIUS_M)
+if kpi is None:
+    st.error("선택 gid를 grid에서 찾지 못했습니다. gid 컬럼/형식을 확인하세요.")
     st.stop()
 
-# 6) 지도 초기 뷰포트(중앙/줌) ----------------------------------
-mid_lat, mid_lon = df["lat"].median(), df["lon"].median()
-zoom_guess = 11 if df["lat"].std() < 0.2 and df["lon"].std() < 0.2 else 9
-view = pdk.ViewState(latitude=mid_lat, longitude=mid_lon, zoom=zoom_guess, bearing=0, pitch=0)
 
-# 7) (항상 켜는) OSM 배경지도 -----------------------------------
-#    토큰 불필요. 모든 단계에서 첫 레이어로 추가하여 백그라운드 고정.
-osm = pdk.Layer(
-    "TileLayer",
-    data="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-    minZoom=0, maxZoom=19, tileSize=256, opacity=1.0
-)
+# KPI cards
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("선택 gid", str(sel_gid))
+c2.metric("반경 내 격자 수", f"{kpi['cells']:,}")
+c3.metric("총 인구", f"{kpi['total_pop']:,.0f}")
+c4.metric("비커버 인구", f"{kpi['uncovered_pop']:,.0f}")
+c5.metric("비커버 비율", f"{kpi['uncovered_rate']*100:.2f}%")
 
-if STEP.startswith("1)"):
-    st.subheader("1. 데이토 로드 & 불러오기")
-    st.write("아래 테이블의 필수 열은 'lat', 'lon' 입니다. (서울 샘플이면 'gu', 'name' 컬럼이 함께 존재)")
-    st.dataframe(df.head(25), use_container_width=True)
-    st.stop()
 
-# 9) 공통: (있으면) 카테고리/구 선택 필터 -----------------------
-right = st.sidebar
-if "gu" in df.columns:
-    cats = ["<전체>"] + df["gu"].astype(str).unique().tolist()
-    sel = right.selectbox("자치구(선택)", cats, index=0)
-else:
-    sel = "<전체>"
+# =========================================================
+# 6) Layout: 좌(Pydeck) / 우(즉석 네트워크)
+# =========================================================
+left, right = st.columns([1, 1])
 
-df_view = df.copy()
-if sel != "<전체>" and "gu" in df_view.columns:
-    df_view = df_view[df_view["gu"].astype(str) == sel]
+# -------------------------
+# LEFT: Pydeck (선택 반경 내 격자 3D)
+# -------------------------
+with left:
+    st.subheader("좌측: Pydeck 3D 격자 + KPI 반경")
 
-if STEP.startswith("2)"):
-    st.subheader("2. 산점지도")
-    point_tooltip = {"text": "📍 {gu} {name}\n(lat: {lat}, lon: {lon})"} if "gu" in df.columns else {"text": "lat: {lat}\nlon: {lon}"}
-    scatter = pdk.Layer(
-        "ScatterplotLayer",
-        data = df_view,
-        get_position = '[lon, lat]',
-        get_radius = 80 if 'gu' in df.columns else 40,
-        get_fill_color = [255, 140, 0, 200],
-        pickable = True 
-    )
+    gdf_ll = kpi["gdf_in_5179"].to_crs(MAP_CRS).copy()
 
-    st.pydeck_chart(
-        pdk.Deck(
-            layers = [osm, scatter],
-            initial_view_state = view,
-            tooltip = point_tooltip
-        ),
-        use_container_width = True
-    )
+    pop = gdf_ll["pop"].clip(lower=0).astype(float)
+    cap_val = float(pop.quantile(0.995)) if len(pop) > 0 else 0.0
+    pop_capped = np.minimum(pop, cap_val) if cap_val > 0 else pop
+    gdf_ll["elev"] = (np.power(pop_capped, 1.80) * 0.02).astype(float)
 
-    st.info("설명: 가장 기본적인 점의 표현입니다. 마우스를 올리면 포인트 상세(구, 이름)가 보입니다.")
-    st.stop()
-
-max_n = min(20000, len(df_view))
-sample_n = right.slider("표본 수", 25, max(200, max_n), min(500, max_n), step=25)
-radius = right.slider("점 반경(px)", 5, 200, 60 if 'gu' in df.columns else 40, step=5)
-opacity = right.slider("점 불투명도(%)", 10, 100, 80, step=5) / 100
-
-df_view2 = df_view.sample(sample_n, random_state=42) if len(df_view) > sample_n else df_view
-
-if STEP.startswith("3)"):
-    st.subheader("3. 성능 제어(표본, 반경, 불투명도)")
-    point_tooltip = {"text": "📍 {gu} {name}\n(lat: {lat}, lon: {lon})"} if "gu" in df.columns else {"text": "lat: {lat}\nlon: {lon}"}
-
-    scatter = pdk.Layer(
-        "ScatterplotLayer",
-        data = df_view2,
-        get_position = '[lon, lat]',
-        get_radius = radius,
-        get_fill_color = [255, 140, 0, int(255*opacity)],
-        pickable = True 
-    )
-
-    st.pydeck_chart(pdk.Deck(
-        layers = [osm, scatter], 
-        initial_view_state = view,
-        tooltip = point_tooltip
-    ),
-    use_container_width = True
-    )
-
-    st.info("설명: 대용량일수록 먼저 표본을 줄이고, 이후 반경, 투명도를 조절해 가독성과 성능을 균형 있게 맞춥니다.")
-    st.stop()
-
-if STEP.startswith("4)"):
-    st.subheader("4. 히트맵 전환")
-    df_heat = df_view2.assign(_w = df_view2["weight"] if "weight" in df_view2.columns else 1)   
-    heat = pdk.Layer(
-        "HeatmapLayer",
-        data = df_heat,
-        get_position = '[lon, lat]',
-        get_weight = "_w",
-        radiusPixels = radius
-    )
-
-    st.pydeck_chart(pdk.Deck(
-        layers = [osm, heat],
-        initial_view_state = view,
-    ),
-    use_container_width = True
-    )
-
-    st.info("설명: 밀도가 높은 영역을 한눈에 확인하려면 히트맵이 효과적입니다. 반경을 키우면 더 부드러운 분포가 됩니다")
-    st.stop()
-
-# 13) STEP 5 — 경로(PathLayer, Mapbox Directions) ----------------
-if STEP.startswith("5)"):
-    st.subheader("⑤ 경로(PathLayer, Mapbox Directions)")
-    st.write("**사용법**: 출발지 → (경유지들) → 도착지 순서로 포인트를 선택하세요. Mapbox Directions가 실제 도로 경로를 그립니다.")
-
-    # 13-1) 선택 UI: 최대 5개 포인트(출발/경유/도착)
-    if "id" not in df.columns:
-        df = df.reset_index().rename(columns={"index":"id"})
-    # 라벨 구성: id + (구/이름) 표시
-    label_col = "gu" if "gu" in df.columns else ("name" if "name" in df.columns else None)
-    display = df["id"].astype(str) + ((" — " + df[label_col].astype(str)) if label_col else "")
-    selected = st.multiselect("포인트 선택(순서 중요 — 출발→경유→도착, 최대 5개)", display.tolist(), max_selections=5)
-
-    # 13-2) 스타일 UI
-    col1, col2, col3 = st.columns([1,1,1])
-    with col1:
-        width_px = st.slider("경로 두께(px)", 2, 12, 6)
-    with col2:
-        color_hex = st.color_picker("경로 색상", "#0066FF")
-    with col3:
-        opacity_px = st.slider("경로 불투명도(%)", 30, 100, 90, step=5)
-
-    # HEX → RGBA
-    hx = color_hex.lstrip("#")
-    rgb = [int(hx[i:i+2], 16) for i in (0,2,4)]
-    rgba = [rgb[0], rgb[1], rgb[2], int(255*(opacity_px/100))]
-
-    # 13-3) 항상 점(배경) + OSM 타일 추가
-    layers = [osm]
-    point_tooltip = {"text": "📍 {gu} {name}\n(lat: {lat}, lon: {lon})"} if "gu" in df.columns else {"text": "lat: {lat}\nlon: {lon}"}
-    layers.append(
-        pdk.Layer(
-            "ScatterplotLayer",
-            data=df_view2,
-            get_position='[lon, lat]',
-            get_radius=60,
-            get_fill_color=[255,140,0,130],
-            pickable=True
-        )
-    )
-
-    # 13-4) 경로 생성(선택 + 토큰 필요)
-    if selected:
-        if MAPBOX_TOKEN.endswith("_입력"):
-            st.warning("경로를 보려면 MAPBOX_TOKEN을 본인 키로 교체하세요.")
+    records = []
+    for gid, popv, is_unc, elev, geom in zip(
+        gdf_ll[GRID_ID_COL].astype(str).tolist(),
+        gdf_ll["pop"].tolist(),
+        gdf_ll["is_uncovered"].tolist(),
+        gdf_ll["elev"].tolist(),
+        gdf_ll.geometry.tolist()
+    ):
+        if geom is None or geom.is_empty:
+            continue
+        if geom.geom_type == "Polygon":
+            polys = [geom]
+        elif geom.geom_type == "MultiPolygon":
+            polys = list(geom.geoms)
         else:
-            # 선택된 id 순서대로 좌표/이름 추출
-            sel_ids = [int(s.split(" — ")[0]) for s in selected]
-            coords = df.set_index("id").loc[sel_ids, ["lon","lat"]].to_numpy().tolist()
-            names  = df.set_index("id").loc[sel_ids, ["gu","name"]].fillna("").astype(str).agg(" ".join, axis=1).tolist() \
-                     if ("gu" in df.columns or "name" in df.columns) else [str(i) for i in sel_ids]
+            continue
 
-            # 라벨: "출발 → 도착" (경유지 있으면 'via N')
-            start_label = names[0]
-            end_label   = names[-1]
-            via_cnt     = max(0, len(names)-2)
-            route_name  = f"{start_label} → {end_label}" + (f" (via {via_cnt})" if via_cnt>0 else "")
+        for poly in polys:
+            records.append({
+                "gid": gid,
+                "pop": float(popv),
+                "is_uncovered": bool(is_unc),
+                "elev": float(elev),
+                "polygon": list(poly.exterior.coords)
+            })
 
-            # Mapbox Directions 호출(실제 도로 경로)
-            coord_str = ";".join([f"{c[0]},{c[1]}" for c in coords])
-            url = f"https://api.mapbox.com/directions/v5/mapbox/driving/{coord_str}"
-            params = {"geometries":"geojson","overview":"full","access_token":MAPBOX_TOKEN}
+    circle_ll = gpd.GeoSeries([kpi["circle_5179"]], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
+    circle_coords = list(circle_ll.exterior.coords)
 
-            try:
-                r = requests.get(url, params=params, timeout=10)
-                data = r.json()
-                if "routes" in data and data["routes"]:
-                    line = data["routes"][0]["geometry"]["coordinates"]  # [[lon,lat], ...]
-                    # PathLayer에 라벨을 박아 툴팁에서 "어디 → 어디" 확인 가능
-                    route_df = pd.DataFrame([{"path_coords": line, "route_name": route_name}])
-                    layers.append(
-                        pdk.Layer(
-                            "PathLayer",
-                            data=route_df,
-                            get_path="path_coords",
-                            get_color=rgba,
-                            width_scale=1,
-                            width_min_pixels=width_px,
-                            width_max_pixels=width_px,
-                            pickable=True
-                        )
-                    )
-                    # 경로 툴팁: 어디→어디
-                    route_tooltip = {"text": "🛣️ {route_name}"}
-                    st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=view, tooltip=route_tooltip), use_container_width=True)
-                    st.success(f"경로 표시: {route_name}")
-                else:
-                    st.warning("Mapbox에서 경로를 찾지 못했습니다. 좌표가 너무 가깝거나 도로 연결이 없을 수 있어요.")
-            except Exception as e:
-                st.error(f"Directions 호출 오류: {e}")
-            st.stop()
+    sel_center_ll = gpd.GeoSeries([kpi["sel_center_5179"]], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
 
-    # 선택이 없으면 기본 지도만 표시
-    st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=view, tooltip=point_tooltip), use_container_width=True)
-    st.info("설명: 포인트를 2개 이상 선택하면 '출발 → 도착' 경로가 그려지고, 경유지를 추가하면 (via N)로 표시됩니다. 경로에 마우스를 올리면 라벨이 툴팁으로 뜹니다.")
+    layer_blocks = pdk.Layer(
+        "PolygonLayer",
+        data=records,
+        get_polygon="polygon",
+        extruded=True,
+        filled=True,
+        stroked=False,
+        get_elevation="elev",
+        elevation_scale=1,
+        get_fill_color="[240, 240, 240, 160]",
+        pickable=True,
+    )
 
+    layer_circle = pdk.Layer(
+        "PolygonLayer",
+        data=[{"polygon": circle_coords}],
+        get_polygon="polygon",
+        filled=False,
+        stroked=True,
+        get_line_color=[30, 30, 30, 220],
+        get_line_width=120,
+    )
+
+    view = pdk.ViewState(
+        latitude=float(sel_center_ll.y),
+        longitude=float(sel_center_ll.x),
+        zoom=14,
+        pitch=65,
+        bearing=20
+    )
+
+    deck = pdk.Deck(
+        layers=[layer_blocks, layer_circle],
+        initial_view_state=view,
+        map_style="carto-positron",
+        tooltip={"text": "gid: {gid}\npop: {pop}\nuncovered: {is_uncovered}"}
+    )
+
+    st.pydeck_chart(deck, use_container_width=True)
+
+
+# -------------------------
+# RIGHT: Folium (즉석 OSMnx+NetworkX 5분 네트워크)
+# -------------------------
+with right:
+    st.subheader("우측: OSMnx+NetworkX 즉석 계산 5분 네트워크")
+
+    with st.spinner("OSM 그래프 로딩/캐시 확인..."):
+        G = build_osm_graph(aoi_poly_4326, network_type="walk")
+        G = add_travel_time(G, speed_m_per_s=float(speed_mps))
+
+    # 선택 중심점(4326) → nearest node
+    sel_center_ll = gpd.GeoSeries([kpi["sel_center_5179"]], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
+    x, y = float(sel_center_ll.x), float(sel_center_ll.y)
+
+    try:
+        source_node = ox.distance.nearest_nodes(G, X=x, Y=y)
+    except Exception as e:
+        st.error(f"nearest_nodes 실패: {e}")
+        st.stop()
+
+    with st.spinner(f"{cutoff_min}분 네트워크 계산 중... (cutoff={cutoff_sec}s)"):
+        gdf_edges = compute_reachable_edges_gdf(G, source_node=int(source_node), cutoff_sec=int(cutoff_sec))
+
+    # KPI: 네트워크 규모 요약
+    n_edges = int(len(gdf_edges))
+    total_len_km = float(gdf_edges["length_m"].sum() / 1000.0) if "length_m" in gdf_edges.columns else np.nan
+    c6, c7 = st.columns(2)
+    c6.metric("네트워크 edge 수", f"{n_edges:,}")
+    if not np.isnan(total_len_km):
+        c7.metric("네트워크 총 길이(km)", f"{total_len_km:,.2f}")
+    else:
+        c7.metric("네트워크 총 길이(km)", "-")
+
+    # Folium 지도
+    m = folium.Map(
+        location=[y, x],
+        zoom_start=14,
+        tiles="cartodbpositron"
+    )
+
+    # 시작점 마커
+    folium.Marker(
+        location=[y, x],
+        tooltip=f"gid={sel_gid} (nearest node: {source_node})",
+        icon=folium.Icon(color="red", icon="play", prefix="fa")
+    ).add_to(m)
+
+    # 네트워크 edge GeoJson
+    if len(gdf_edges) > 0:
+        # tooltip에 보여줄 필드 최소화
+        tooltip_fields = []
+        if "length_m" in gdf_edges.columns:
+            tooltip_fields.append("length_m")
+        if "time_s" in gdf_edges.columns:
+            tooltip_fields.append("time_s")
+
+        folium.GeoJson(
+            gdf_edges,
+            name=f"reachable_network_{cutoff_min}min",
+            style_function=lambda x: {"color": "#0055ff", "weight": 3, "opacity": 0.85},
+            tooltip=folium.GeoJsonTooltip(
+                fields=tooltip_fields,
+                aliases=["length(m)", "time(s)"][:len(tooltip_fields)]
+            ) if len(tooltip_fields) > 0 else None
+        ).add_to(m)
+    else:
+        st.info("5분 내 도달 가능한 네트워크가 비어 있습니다. AOI/속도/위치 범위를 확인하세요.")
+
+    # (참고) KPI 반경 링도 같이 보여주기
+    circle_ll = gpd.GeoSeries([kpi["circle_5179"]], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
+    folium.GeoJson(
+        {"type": "Feature", "properties": {}, "geometry": circle_ll.__geo_interface__},
+        name="kpi_radius",
+        style_function=lambda x: {"color": "#111111", "weight": 2, "opacity": 0.8}
+    ).add_to(m)
+
+    folium.LayerControl(collapsed=False).add_to(m)
+    st_folium(m, width=None, height=650)
+
+
+# =========================================================
+# 7) 디버그(필요시)
+# =========================================================
+with st.expander("데이터/그래프 진단"):
+    st.write("GRID_SHP:", GRID_SHP)
+    st.write("UNCOVERED_GPKG:", UNCOVERED_GPKG, "(exists:", os.path.exists(UNCOVERED_GPKG), ")")
+    st.write("grid CRS:", str(gdf_grid.crs))
+    st.write("grid columns:", list(gdf_grid.columns))
+    st.write("OSM graph nodes:", len(G.nodes), "edges:", len(G.edges))
+    st.write("AOI (4326) bounds:", aoi_poly_4326.bounds)
