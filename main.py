@@ -1,3 +1,4 @@
+# app.py
 import os
 import warnings
 warnings.filterwarnings("ignore")
@@ -24,9 +25,11 @@ from shapely.geometry import Point
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 
-GRID_SHP = os.path.join(DATA_DIR, "nlsp_021001001.shp")          # 전수 격자(남현동만 clip)
-UNCOVERED_GPKG = os.path.join(DATA_DIR, "demo_uncovered.gpkg")  # 선택(없어도 됨)
-ADMIN_GPKG = os.path.join(DATA_DIR, "demo_admin.gpkg")          # 남현동 행정구역 포함
+GRID_SHP = os.path.join(DATA_DIR, "nlsp_021001001.shp")            # 전수 격자(여기서 남현동만 clip)
+UNCOVERED_GPKG = os.path.join(DATA_DIR, "demo_uncovered.gpkg")     # 선택(없어도 됨)
+
+# ✅ 남현동 포함된 행정동 경계 (GPKG 권장)
+ADMIN_GPKG = os.path.join(DATA_DIR, "demo_admin.gpkg")
 
 GRID_ID_COL = "gid"
 GRID_POP_COL = "val"
@@ -34,20 +37,21 @@ GRID_POP_COL = "val"
 TARGET_CRS = 5179
 MAP_CRS = 4326
 
-
 # =========================================================
-# 1) 고정 파라미터(일반값 고정) - UI에서 조정 안 함
+# 1) 고정 파라미터(일반값)
 # =========================================================
 KPI_RADIUS_M = 1250
-NEW_STATION_BUFFER_M = 1250
-
 WALK_SPEED_MPS = 1.4
 CUTOFF_MIN = 5
 CUTOFF_SEC = CUTOFF_MIN * 60
-GRAPH_DIST_M = 3500
 
+GRAPH_DIST_M = 3500
+NEW_STATION_BUFFER_M = 1250
+
+# Carto GL 스타일(맵박스 토큰 없어도 동작)
 CARTO_POSITRON_GL = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
 
+# Mapbox 토큰(있으면 더 안정적으로 표시 가능)
 MAPBOX_TOKEN = os.getenv("MAPBOX_API_KEY") or os.getenv("MAPBOX_TOKEN")
 if MAPBOX_TOKEN:
     pdk.settings.mapbox_api_key = MAPBOX_TOKEN
@@ -58,16 +62,16 @@ if MAPBOX_TOKEN:
 # =========================================================
 st.set_page_config(page_title="5강 | 남현동만", layout="wide")
 
-st.title("🚲 5강 | 남현동만: 격자 선택 → KPI 즉석 계산 → 좌(Pydeck) / 우(남현동 경계 + 커버효과 + 5분 네트워크)")
+st.title("🚲 5강 | 남현동만: KPI 아래 gid 선택 → 좌(Pydeck) / 우(Folium) + 5분 네트워크")
 st.caption(
-    f"고정값: KPI반경={KPI_RADIUS_M}m | 신규커버반경={NEW_STATION_BUFFER_M}m | "
-    f"보행속도={WALK_SPEED_MPS}m/s | 컷오프={CUTOFF_MIN}분 | 그래프반경={GRAPH_DIST_M}m"
+    f"고정값: KPI반경={KPI_RADIUS_M}m | 보행속도={WALK_SPEED_MPS}m/s | "
+    f"컷오프={CUTOFF_MIN}분 | 그래프반경={GRAPH_DIST_M}m | 신규 커버반경={NEW_STATION_BUFFER_M}m"
 )
 
 
 # =========================================================
-# 3) Loaders (캐시)
-# - cache key에는 'path(str)' 같은 해시 가능한 값만 넣는다
+# 3) LOADERS (cache)
+# - 캐시 함수 입력은 해시 가능한 값(주로 path, float, int)만 넣기
 # =========================================================
 @st.cache_data(show_spinner=True)
 def load_grid(path: str) -> gpd.GeoDataFrame:
@@ -111,7 +115,9 @@ def load_uncovered(path: str) -> gpd.GeoDataFrame:
 @st.cache_data(show_spinner=True)
 def load_admin(path: str) -> gpd.GeoDataFrame:
     if not os.path.exists(path):
-        raise FileNotFoundError("남현동 행정구역 파일이 필요합니다. data/demo_admin.gpkg 를 넣어주세요.")
+        raise FileNotFoundError(
+            "남현동 행정구역 파일이 필요합니다. data/demo_admin.gpkg 를 넣어주세요."
+        )
 
     gdf = gpd.read_file(path)
     if gdf.crs is None:
@@ -121,9 +127,9 @@ def load_admin(path: str) -> gpd.GeoDataFrame:
     return gdf
 
 
-@st.cache_data(show_spinner=True)
+@st.cache_data(show_spinner=False)
 def pick_namhyeon_polygon(admin_path: str) -> gpd.GeoDataFrame:
-    gdf_admin_5179 = load_admin(admin_path)
+    gdf_admin = load_admin(admin_path)
 
     NAME_COL_CANDIDATES = [
         "ADM_NM", "adm_nm", "ADMNM",
@@ -135,22 +141,22 @@ def pick_namhyeon_polygon(admin_path: str) -> gpd.GeoDataFrame:
 
     name_col = None
     for c in NAME_COL_CANDIDATES:
-        if c in gdf_admin_5179.columns:
+        if c in gdf_admin.columns:
             name_col = c
             break
 
     if name_col is None:
-        # 컬럼을 못 찾으면 첫 행만 사용(최후 fallback)
-        return gdf_admin_5179.iloc[[0]].copy()
+        return gdf_admin.iloc[[0]].copy()
 
-    mask = gdf_admin_5179[name_col].astype(str).str.contains("남현", na=False)
+    s = gdf_admin[name_col].astype(str)
+    mask = s.str.contains("남현", na=False)
     if mask.sum() == 0:
-        mask = gdf_admin_5179[name_col].astype(str).str.contains("남현동", na=False)
+        mask = s.str.contains("남현동", na=False)
 
     if mask.sum() == 0:
-        return gdf_admin_5179.iloc[[0]].copy()
+        return gdf_admin.iloc[[0]].copy()
 
-    return gdf_admin_5179.loc[mask].copy()
+    return gdf_admin.loc[mask].copy()
 
 
 @st.cache_data(show_spinner=True)
@@ -159,6 +165,7 @@ def clip_grid_to_namhyeon(grid_path: str, admin_path: str):
     gdf_nam = pick_namhyeon_polygon(admin_path)
 
     nam_union = gdf_nam.geometry.union_all()
+
     gdf_sub = gdf_grid[gdf_grid.geometry.intersects(nam_union)].copy()
     gdf_clip = gpd.clip(gdf_sub, gdf_nam)
     gdf_clip["geometry"] = gdf_clip.geometry.buffer(0)
@@ -166,26 +173,31 @@ def clip_grid_to_namhyeon(grid_path: str, admin_path: str):
 
 
 @st.cache_data(show_spinner=False)
-def attach_is_uncovered_by_path(grid_path: str, admin_path: str, unc_path: str):
-    # 남현동으로 clip된 격자만 만든 뒤, uncovered 붙여서 반환
-    gdf_grid_nam, gdf_namhyeon = clip_grid_to_namhyeon(grid_path, admin_path)
+def attach_is_uncovered_from_paths(grid_path: str, admin_path: str, unc_path: str):
+    gdf_grid_nam, gdf_nam = clip_grid_to_namhyeon(grid_path, admin_path)
     gdf_unc = load_uncovered(unc_path)
 
     g = gdf_grid_nam.copy()
     if len(gdf_unc) == 0:
         g["is_uncovered"] = False
-        return g, gdf_namhyeon, gdf_unc
+        return g, gdf_nam, gdf_unc
 
     unc_union = gdf_unc.geometry.union_all()
     g["is_uncovered"] = g.geometry.intersects(unc_union)
-
-    return g, gdf_namhyeon, gdf_unc
+    return g, gdf_nam, gdf_unc
 
 
 @st.cache_resource(show_spinner=True)
 def build_osm_graph_from_point(lat: float, lon: float, dist_m: int, network_type: str = "walk"):
     ox.settings.log_console = False
-    G = ox.graph_from_point((lat, lon), dist=int(dist_m), network_type=network_type, simplify=True)
+    G = ox.graph_from_point(
+        (float(lat), float(lon)),
+        dist=int(dist_m),
+        network_type=network_type,
+        simplify=True
+    )
+
+    # OSMnx 버전 호환: 2.x는 ox.distance.add_edge_lengths
     try:
         G = ox.distance.add_edge_lengths(G)
     except Exception:
@@ -193,14 +205,17 @@ def build_osm_graph_from_point(lat: float, lon: float, dist_m: int, network_type
             G = ox.add_edge_lengths(G)
         except Exception:
             pass
+
     return G
 
 
 # =========================================================
-# 4) Data Load: 남현동 격자만 + 비커버 attach
+# 4) Data Load: 남현동 격자만
 # =========================================================
 with st.spinner("남현동 격자만 로딩/클립 중..."):
-    gdf_grid_nam, gdf_namhyeon, gdf_unc = attach_is_uncovered_by_path(GRID_SHP, ADMIN_GPKG, UNCOVERED_GPKG)
+    gdf_grid_nam, gdf_namhyeon, gdf_unc = attach_is_uncovered_from_paths(
+        GRID_SHP, ADMIN_GPKG, UNCOVERED_GPKG
+    )
 
 if len(gdf_grid_nam) == 0:
     st.error("남현동으로 clip된 격자가 0개입니다. 행정구역 파일/CRS/남현동 명칭 컬럼을 확인하세요.")
@@ -210,16 +225,20 @@ all_gids = gdf_grid_nam[GRID_ID_COL].astype(str).tolist()
 
 
 # =========================================================
-# 5) KPI (gid 선택은 KPI 아래)
+# 5) KPI + gid 선택 (사이드바 X, KPI 아래)
 # =========================================================
 st.subheader("KPI")
-sel_gid = st.selectbox("남현동 격자 gid 선택", options=all_gids, index=0)
+sel_gid = st.selectbox("남현동 격자 gid 선택", options=all_gids, index=0, key="gid_select")
 
 
 # =========================================================
-# 6) KPI + 신규 커버 효과 (스크립트 형태)
+# 6) KPI 즉석 계산 + 신규 커버(교집합)
 # =========================================================
 row = gdf_grid_nam.loc[gdf_grid_nam[GRID_ID_COL] == str(sel_gid)]
+if len(row) == 0:
+    st.error("선택 gid를 남현동 격자에서 찾지 못했습니다.")
+    st.stop()
+
 sel_poly = row.geometry.iloc[0]
 sel_center_5179 = sel_poly.centroid
 
@@ -234,12 +253,12 @@ unc_pop = float(gdf_in.loc[gdf_in["is_uncovered"] == True, "pop"].sum())
 cov_pop = total_pop - unc_pop
 unc_rate = (unc_pop / total_pop) if total_pop > 0 else 0.0
 
-newly_covered_geom = None
-unc_union = None
+# "새로 커버된 비커버" = (비커버 ∩ 남현동) ∩ 신규버퍼
+newly_covered_geom_5179 = None
 if len(gdf_unc) > 0:
     nam_union = gdf_namhyeon.geometry.union_all()
-    unc_union = gdf_unc.geometry.union_all().intersection(nam_union)
-    newly_covered_geom = unc_union.intersection(station_buffer_5179)
+    unc_union_nam = gdf_unc.geometry.union_all().intersection(nam_union)
+    newly_covered_geom_5179 = unc_union_nam.intersection(station_buffer_5179)
 
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("선택 gid", str(sel_gid))
@@ -254,13 +273,14 @@ c5.metric("비커버 비율", f"{unc_rate*100:.2f}%")
 # =========================================================
 left, right = st.columns([1, 1], gap="large")
 
-
 # -------------------------
 # LEFT: Pydeck
+# - 남현동 경계도 같이 올려서 가시성 강화
 # -------------------------
 with left:
-    st.subheader("좌측: Pydeck | 남현동 격자 + 신규 정류장 + 커버 버퍼")
+    st.subheader("좌측: Pydeck | 남현동 격자 + 신규 정류장 + 커버 버퍼 + 남현동 경계")
 
+    # KPI 반경 내 격자(4326)
     gdf_ll = gdf_in.to_crs(MAP_CRS).copy()
 
     pop = gdf_ll["pop"].clip(lower=0).astype(float)
@@ -268,7 +288,8 @@ with left:
     pop_capped = np.minimum(pop, cap_val) if cap_val > 0 else pop
     gdf_ll["elev"] = (np.power(pop_capped, 1.80) * 0.02).astype(float)
 
-    records = []
+    # 격자 records
+    grid_records = []
     for gid, popv, is_unc, elev, geom in zip(
         gdf_ll[GRID_ID_COL].astype(str).tolist(),
         gdf_ll["pop"].tolist(),
@@ -284,25 +305,53 @@ with left:
             polys = list(geom.geoms)
         else:
             polys = []
-
         for poly in polys:
-            records.append(
-                {
-                    "gid": gid,
-                    "pop": float(popv),
-                    "is_uncovered": bool(is_unc),
-                    "elev": float(elev),
-                    "polygon": list(poly.exterior.coords),
-                }
-            )
+            grid_records.append({
+                "gid": gid,
+                "pop": float(popv),
+                "is_uncovered": bool(is_unc),
+                "elev": float(elev),
+                "polygon": list(poly.exterior.coords)
+            })
 
+    # 남현동 경계 records (4326)
+    gdf_nam_ll = gdf_namhyeon.to_crs(MAP_CRS).copy()
+    admin_records = []
+    for geom in gdf_nam_ll.geometry.tolist():
+        if geom is None or geom.is_empty:
+            continue
+        if geom.geom_type == "Polygon":
+            polys = [geom]
+        elif geom.geom_type == "MultiPolygon":
+            polys = list(geom.geoms)
+        else:
+            polys = []
+        for poly in polys:
+            admin_records.append({"polygon": list(poly.exterior.coords)})
+
+    # KPI 원 + 신규 커버 버퍼 + 중심점
     kpi_circle_ll = gpd.GeoSeries([kpi_circle_5179], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
     station_buf_ll = gpd.GeoSeries([station_buffer_5179], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
     center_ll = gpd.GeoSeries([sel_center_5179], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
 
+    # layers
+    layer_admin = pdk.Layer(
+        "PolygonLayer",
+        data=admin_records,
+        get_polygon="polygon",
+        extruded=True,
+        get_elevation=2,     # 경계가 3D 격자에 파묻히는 느낌 방지(살짝 띄움)
+        elevation_scale=1,
+        filled=False,
+        stroked=True,
+        get_line_color=[0, 0, 0, 230],
+        get_line_width=180,
+        pickable=False,
+    )
+
     layer_grid = pdk.Layer(
         "PolygonLayer",
-        data=records,
+        data=grid_records,
         get_polygon="polygon",
         extruded=True,
         filled=True,
@@ -321,6 +370,7 @@ with left:
         stroked=True,
         get_line_color=[30, 30, 30, 220],
         get_line_width=140,
+        pickable=False,
     )
 
     layer_station_buf = pdk.Layer(
@@ -331,6 +381,7 @@ with left:
         stroked=True,
         get_line_color=[0, 120, 0, 220],
         get_line_width=140,
+        pickable=False,
     )
 
     layer_station = pdk.Layer(
@@ -349,36 +400,19 @@ with left:
         bearing=20,
     )
 
-    # ✅ pydeck 지도 “무조건 뜨게” 안전장치
-    # - 토큰 있으면 mapbox 스타일 사용
-    # - 토큰 없으면 CARTO GL 스타일 사용
-    # - 그래도 안 뜨면 map_style=None (배경 없는 deck만이라도 표시)
-    if MAPBOX_TOKEN:
-        style = "mapbox://styles/mapbox/light-v11"
-    else:
-        style = CARTO_POSITRON_GL
-
     deck = pdk.Deck(
-        layers=[layer_grid, layer_kpi, layer_station_buf, layer_station],
+        layers=[layer_admin, layer_grid, layer_kpi, layer_station_buf, layer_station],
         initial_view_state=view,
-        map_style=style,
+        map_style=CARTO_POSITRON_GL if not MAPBOX_TOKEN else "mapbox://styles/mapbox/light-v11",
         tooltip={"text": "gid: {gid}\npop: {pop}\nuncovered: {is_uncovered}"},
     )
 
-    try:
-        st.pydeck_chart(deck, width="stretch")
-    except Exception:
-        deck = pdk.Deck(
-            layers=[layer_grid, layer_kpi, layer_station_buf, layer_station],
-            initial_view_state=view,
-            map_style=None,
-            tooltip={"text": "gid: {gid}\npop: {pop}\nuncovered: {is_uncovered}"},
-        )
-        st.pydeck_chart(deck, width="stretch")
+    st.pydeck_chart(deck, width="stretch")
 
 
 # -------------------------
-# RIGHT: Folium
+# RIGHT: Folium + 즉석 5분 네트워크
+# - 남현동 경계 + 비커버 + 신규커버 + 5분 네트워크
 # -------------------------
 with right:
     st.subheader("우측: Folium | 남현동 경계 + 비커버 + 신규 커버 + 5분 네트워크")
@@ -390,11 +424,16 @@ with right:
         G = build_osm_graph_from_point(lat=lat, lon=lon, dist_m=int(GRAPH_DIST_M), network_type="walk")
 
     with st.spinner("그래프 투영(project) + travel_time 세팅..."):
+        # unprojected graph에서 nearest_nodes는 sklearn 요구할 수 있음
+        # => project_graph로 투영한 뒤, 투영좌표에서 nearest_nodes 수행
         Gp = ox.project_graph(G)
 
-        gdf_center_proj = gpd.GeoSeries([Point(lon, lat)], crs=MAP_CRS).to_crs(Gp.graph["crs"])
-        px, py = float(gdf_center_proj.iloc[0].x), float(gdf_center_proj.iloc[0].y)
+        # 중심점도 그래프 CRS로 변환
+        pt_ll = gpd.GeoSeries([Point(lon, lat)], crs=MAP_CRS)
+        pt_proj = pt_ll.to_crs(Gp.graph["crs"]).iloc[0]
+        px, py = float(pt_proj.x), float(pt_proj.y)
 
+        # travel_time(초) 설정
         for u, v, k, data in Gp.edges(keys=True, data=True):
             length_m = float(data.get("length", 0.0))
             data["travel_time"] = (length_m / float(WALK_SPEED_MPS)) if WALK_SPEED_MPS > 0 else np.inf
@@ -424,8 +463,10 @@ with right:
     ).add_to(m)
 
     # 비커버(남현동)
-    if unc_union is not None:
-        unc_ll = gpd.GeoSeries([unc_union], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
+    if len(gdf_unc) > 0:
+        nam_union = gdf_namhyeon.geometry.union_all()
+        unc_union_nam = gdf_unc.geometry.union_all().intersection(nam_union)
+        unc_ll = gpd.GeoSeries([unc_union_nam], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
         if not unc_ll.is_empty:
             folium.GeoJson(
                 {"type": "Feature", "properties": {}, "geometry": unc_ll.__geo_interface__},
@@ -448,9 +489,9 @@ with right:
         style_function=lambda x: {"color": "#00aa00", "weight": 2, "fillOpacity": 0.03},
     ).add_to(m)
 
-    # 새로 커버된 비커버(교집합)
-    if newly_covered_geom is not None and (not newly_covered_geom.is_empty):
-        newly_ll = gpd.GeoSeries([newly_covered_geom], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
+    # 새로 커버된 비커버
+    if newly_covered_geom_5179 is not None and (not newly_covered_geom_5179.is_empty):
+        newly_ll = gpd.GeoSeries([newly_covered_geom_5179], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
         folium.GeoJson(
             {"type": "Feature", "properties": {}, "geometry": newly_ll.__geo_interface__},
             name="새로 커버된 비커버",
@@ -464,6 +505,14 @@ with right:
             name=f"5분 네트워크({CUTOFF_MIN}min)",
             style_function=lambda x: {"color": "#0055ff", "weight": 3, "opacity": 0.85},
         ).add_to(m)
+
+    # KPI 원(참고)
+    kpi_circle_ll = gpd.GeoSeries([kpi_circle_5179], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
+    folium.GeoJson(
+        {"type": "Feature", "properties": {}, "geometry": kpi_circle_ll.__geo_interface__},
+        name="KPI 반경",
+        style_function=lambda x: {"color": "#111111", "weight": 2, "opacity": 0.7},
+    ).add_to(m)
 
     folium.LayerControl(collapsed=False).add_to(m)
     st_folium(m, width=None, height=680)
@@ -479,7 +528,8 @@ with st.expander("진단"):
     st.write("남현동 격자 수:", len(gdf_grid_nam))
     st.write("남현동 admin rows:", len(gdf_namhyeon))
     st.write("admin columns:", list(load_admin(ADMIN_GPKG).columns))
-    if MAPBOX_TOKEN:
-        st.write("MAPBOX_TOKEN: OK (환경변수에서 로드됨)")
-    else:
-        st.write("MAPBOX_TOKEN: 없음 (CARTO GL 스타일 사용)")
+
+    try:
+        st.write("OSM graph nodes:", len(Gp.nodes), "edges:", len(Gp.edges))
+    except Exception:
+        st.write("OSM graph: (우측 실행 전)")
