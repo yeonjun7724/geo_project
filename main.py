@@ -293,8 +293,8 @@ with left:  # 좌측 컬럼 시작
 # =========================================================
 # 4-B) RIGHT: Folium  # 섹션 설명 주석
 # - 버스정류장 아이콘 표시  # 설명 주석
-# - 신규 경로: 반경 내 버스정류장이 있으면 + 5분 내 도달 가능한 정류장까지 경로만 표시  # ✅ 요구사항 반영
-# - 기존 경로: routes_all.gpkg 모든 레이어/칼럼을 합쳐 "기존 커버 경로" 1개만 표시  # ✅ 요구사항 반영
+# - 신규 경로: 반경 내 버스정류장이 있으면 + 5분 내 도달 가능한 정류장까지 경로만 표시  #  요구사항 반영
+# - 기존 경로: routes_all.gpkg 모든 레이어/칼럼을 합쳐 "기존 커버 경로" 1개만 표시  #  요구사항 반영
 # =========================================================
 
 with right:  # 우측 컬럼 시작
@@ -339,7 +339,7 @@ with right:  # 우측 컬럼 시작
         style_function=lambda x: {"color": "#00aa00", "weight": 2, "fillOpacity": 0.03},  # 스타일(초록)
     ).add_to(m)  # 지도에 추가
 
-    # ✅ 버스정류장 마커(남현동 내부 전체)  # 섹션 설명 주석
+    #  버스정류장 마커(남현동 내부 전체)  # 섹션 설명 주석
     gdf_bus_nam_ll = gdf_bus_nam.to_crs(MAP_CRS).copy()  # 남현동 버스정류장을 4326으로 변환
     for ars, nm, typ, geom in zip(  # 버스정류장을 순회
         gdf_bus_nam_ll["ARS_ID"].tolist(),  # 정류장 ID
@@ -354,22 +354,22 @@ with right:  # 우측 컬럼 시작
         ).add_to(m)  # 지도에 추가
 
     # =========================================================
-    # 2) ✅ 신규 경로(최종 요구사항 반영)  # 섹션 설명 주석
+    # 2)  신규 경로(최종 요구사항 반영)  # 섹션 설명 주석
     # - "반경 내 버스정류장"이 있을 때만 경로를 만든다  # 설명 주석
     # - 반경 내 정류장들 각각에 대해  # 설명 주석
     #   신규 따릉이 정류소 → 버스정류장 최단경로들을 표시한다  # 설명 주석
     # - 반경 내 정류장이 없으면 신규 경로는 표시하지 않는다  # 설명 주석
     # =========================================================
 
-    gdf_bus_in_radius = gdf_bus_nam[gdf_bus_nam.geometry.intersects(station_buffer_5179)].copy()  # ✅ 반경(5179) 내 버스정류장만 추출
+    gdf_bus_in_radius = gdf_bus_nam[gdf_bus_nam.geometry.intersects(station_buffer_5179)].copy()  #  반경(5179) 내 버스정류장만 추출
 
     if len(gdf_bus_in_radius) == 0:  # 반경 내 버스정류장이 없으면
-        pass  # ✅ 신규 경로는 표시하지 않음(요구사항)
+        pass  #  신규 경로는 표시하지 않음(요구사항)
     else:  # 반경 내 버스정류장이 있으면
         try:  # 네트워크/경로 계산 전체를 try로 감싸 지도 표시 자체는 유지
             ox.settings.log_console = False  # OSMnx 로그 끄기(콘솔 출력 최소화)
 
-            # ✅ 신규 따릉이 정류소(지도 중심점) 기준으로 도보 네트워크 그래프 다운로드  # 설명 주석
+            #  신규 따릉이 정류소(지도 중심점) 기준으로 도보 네트워크 그래프 다운로드  # 설명 주석
             G = ox.graph_from_point(  # OSM 그래프 생성
                 (lat, lon),  # 중심점(lat, lon)
                 dist=int(GRAPH_DIST_M),  # 다운로드 반경(미터)
@@ -377,32 +377,32 @@ with right:  # 우측 컬럼 시작
                 simplify=True,  # 그래프 단순화
             )  # G 생성 끝
 
-            # ✅ 엣지 길이(length) 속성 추가(OSMnx 버전별 API 대응)  # 설명 주석
+            #  엣지 길이(length) 속성 추가(OSMnx 버전별 API 대응)  # 설명 주석
             try:  # OSMnx 2.x
                 G = ox.distance.add_edge_lengths(G)  # length 추가
             except Exception:  # OSMnx 1.x
                 G = ox.add_edge_lengths(G)  # length 추가
 
-            # ✅ 그래프를 미터 CRS로 투영(거리/시간 계산 안정화)  # 설명 주석
+            #  그래프를 미터 CRS로 투영(거리/시간 계산 안정화)  # 설명 주석
             Gp = ox.project_graph(G)  # 투영 그래프
 
-            # ✅ 신규 따릉이 정류소(중심점)를 그래프 CRS로 변환한 뒤 최근접 노드 추출  # 설명 주석
+            #  신규 따릉이 정류소(중심점)를 그래프 CRS로 변환한 뒤 최근접 노드 추출  # 설명 주석
             pt_proj = gpd.GeoSeries([Point(lon, lat)], crs=MAP_CRS).to_crs(Gp.graph["crs"]).iloc[0]  # 중심점을 그래프 CRS로
             px, py = float(pt_proj.x), float(pt_proj.y)  # 투영 좌표
             source_node = ox.distance.nearest_nodes(Gp, X=px, Y=py)  # 출발 노드(최근접)
 
-            # ✅ 최단경로 가중치로 쓸 travel_time(초)을 모든 엣지에 부여  # 설명 주석
+            #  최단경로 가중치로 쓸 travel_time(초)을 모든 엣지에 부여  # 설명 주석
             for u, v, k, data in Gp.edges(keys=True, data=True):  # 모든 엣지 순회
                 data["travel_time"] = float(data.get("length", 0.0)) / float(WALK_SPEED_MPS)  # time(s)=length(m)/speed(m/s)
 
-            # ✅ 반경 내 버스정류장을 그래프 CRS로 투영 후, 각 정류장 최근접 노드 추출  # 설명 주석
+            #  반경 내 버스정류장을 그래프 CRS로 투영 후, 각 정류장 최근접 노드 추출  # 설명 주석
             bus_pts_proj = gdf_bus_in_radius.to_crs(Gp.graph["crs"]).copy()  # 정류장 투영
             bus_nodes = []  # 정류장 노드 리스트
             for p in bus_pts_proj.geometry.tolist():  # 정류장 포인트 순회
                 bn = ox.distance.nearest_nodes(Gp, X=float(p.x), Y=float(p.y))  # 정류장 최근접 노드
                 bus_nodes.append(int(bn))  # 정수로 저장
 
-            # ✅ 신규 따릉이 정류소 → 반경 내 버스정류장 최단경로를 모두 생성  # 설명 주석
+            #  신규 따릉이 정류소 → 반경 내 버스정류장 최단경로를 모두 생성  # 설명 주석
             link_features = []  # 경로 feature 리스트
             max_routes = 80  # 데모 렌더링 성능을 위한 상한(원하면 늘려도 됨)
 
@@ -428,7 +428,7 @@ with right:  # 우측 컬럼 시작
             st.warning(f"OSMnx/NetworkX 경로 계산이 실패했습니다. (지도는 정상 표시) | 에러: {type(e).__name__}: {e}")  # 경고 출력
 
     # =========================================================
-    # 3) ✅ 기존 경로(routes_all.gpkg)  # 섹션 설명 주석
+    # 3)  기존 경로(routes_all.gpkg)  # 섹션 설명 주석
     # - 모든 레이어/칼럼을 읽어도 최종은 geometry만 남겨서  # 설명 주석
     # - '기존 커버 경로' 1개 레이어로만 표시  # 설명 주석
     # =========================================================
@@ -449,7 +449,7 @@ with right:  # 우측 컬럼 시작
                     continue  # 스킵
                 if gdf_tmp.crs is None:  # CRS가 없으면
                     gdf_tmp = gdf_tmp.set_crs(TARGET_CRS)  # 5179로 가정(데모 기준)
-                gdf_tmp = gdf_tmp[["geometry"]].copy()  # ✅ geometry만 남김(스키마 충돌 제거)
+                gdf_tmp = gdf_tmp[["geometry"]].copy()  #  geometry만 남김(스키마 충돌 제거)
                 gdfs.append(gdf_tmp)  # 리스트에 추가
             except Exception:  # 읽기 실패하면
                 continue  # 다음 레이어로
@@ -473,4 +473,5 @@ with right:  # 우측 컬럼 시작
 
     folium.LayerControl(collapsed=False).add_to(m)  # 레이어 컨트롤 추가(펼친 상태)
     st_folium(m, width=None, height=MAP_HEIGHT_PX, key=f"folium_{sel_gid}")  # Folium 지도 출력(우측)
+
 
