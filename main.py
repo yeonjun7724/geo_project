@@ -29,8 +29,7 @@ UNCOVERED_GPKG = os.path.join(DATA_DIR, "demo_uncovered.gpkg")  # 선택(없어�
 
 # ✅ 행정구역 파일(남현동 포함된 행정동/법정동 경계)
 # - 둘 중 하나만 있으면 됨
-ADMIN_GPKG = os.path.join(DATA_DIR, "admin_dong.gpkg")
-ADMIN_SHP  = os.path.join(DATA_DIR, "admin_dong.shp")
+ADMIN_GPKG = os.path.join(DATA_DIR, "demo_admin.gpkg")
 
 GRID_ID_COL = "gid"
 GRID_POP_COL = "val"
@@ -114,8 +113,6 @@ def load_admin() -> gpd.GeoDataFrame:
     path = None
     if os.path.exists(ADMIN_GPKG):
         path = ADMIN_GPKG
-    elif os.path.exists(ADMIN_SHP):
-        path = ADMIN_SHP
 
     if path is None:
         raise FileNotFoundError("남현동 행정구역 파일이 필요합니다. data/admin_dong.gpkg 또는 data/admin_dong.shp를 넣어주세요.")
@@ -448,3 +445,4 @@ with st.expander("진단"):
     st.write("남현동 격자 수:", len(gdf_grid_nam))
     st.write("남현동 admin rows:", len(gdf_namhyeon))
     st.write("admin columns:", list(load_admin().columns))
+
