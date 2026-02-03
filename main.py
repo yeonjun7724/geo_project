@@ -71,8 +71,19 @@ st.markdown(  # CSS를 주입하기 위한 markdown 호출
       /* 타이틀 자간 조금 줄여서 보기 좋게 */  /* 설명 주석 */
       h1, h2, h3 { letter-spacing: -0.02em; }  /* 타이틀 자간 */
 
-      /* ✅ 메인 타이틀 가운데 정렬 */  /* 설명 주석 */
-      h1 { text-align: center; }  /* 타이틀 중앙 정렬 */
+      /* ✅ 메인 타이틀 가운데 정렬(Streamlit DOM에 맞춘 안전한 셀렉터) */  /* 설명 주석 */
+      .stApp h1,  /* 구버전/일부 테마 fallback */
+      div[data-testid="stMarkdownContainer"] h1,  /* st.title이 들어가는 컨테이너 */
+      .stTitle {  /* 일부 버전에서 타이틀 클래스가 따로 붙음 */
+        text-align: center;  /* 타이틀 중앙 정렬 */
+        width: 100%;  /* 중앙 정렬 안정화 */
+      }  /* 타이틀 중앙 정렬 끝 */
+
+      /* ✅ 제목 위/아래 여백 과하면 줄이기(스크린샷처럼 떠 보일 때) */  /* 설명 주석 */
+      div[data-testid="stMarkdownContainer"] h1 {
+        margin-top: 0.2rem;  /* 위 여백 */
+        margin-bottom: 0.8rem;  /* 아래 여백 */
+      }  /* 여백 조정 끝 */
 
       /* 캡션 색상 */  /* 설명 주석 */
       .stCaption { color: #666; }  /* 캡션 색 */
@@ -487,4 +498,5 @@ with right:  # 우측 컬럼 컨텍스트 시작
 
     folium.LayerControl(collapsed=False).add_to(m)  # 레이어 컨트롤 추가
     st_folium(m, width=None, height=MAP_HEIGHT_PX)  # ✅ 우측 지도 높이 고정(좌측과 동일)
+
 
