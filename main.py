@@ -303,36 +303,7 @@ with right:  # 우측 컬럼 시작
     center_ll = gpd.GeoSeries([sel_center_5179], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]  # 중심점 4326
     lon, lat = float(center_ll.x), float(center_ll.y)  # 지도 중심 lon/lat
 
-    ox.settings.log_console = False  # OSMnx 로그 끄기
-    G = ox.graph_from_point((lat, lon), dist=int(GRAPH_DIST_M), network_type="walk", simplify=True)  # OSM 그래프 다운로드
-
-    try:  # OSMnx 2.x 스타일
-        G = ox.distance.add_edge_lengths(G)  # edge length 추가
-    except Exception:  # OSMnx 1.x 스타일
-        G = ox.add_edge_lengths(G)  # edge length 추가
-
-    Gp = ox.project_graph(G)  # 그래프를 미터 CRS로 투영
-    pt_proj = gpd.GeoSeries([Point(lon, lat)], crs=MAP_CRS).to_crs(Gp.graph["crs"]).iloc[0]  # 중심점을 그래프 CRS로
-    px, py = float(pt_proj.x), float(pt_proj.y)  # 중심점 투영 좌표
-
-    for u, v, k, data in Gp.edges(keys=True, data=True):  # 모든 엣지 순회
-        data["travel_time"] = float(data.get("length", 0.0)) / float(WALK_SPEED_MPS)  # 보행 시간(초) 계산
-
-    source_node = ox.distance.nearest_nodes(Gp, X=px, Y=py)  # 중심점에 가장 가까운 노드 찾기
-
-    lengths = nx.single_source_dijkstra_path_length(  # 다익스트라로 도달시간 계산
-        Gp,  # 그래프
-        int(source_node),  # 시작 노드
-        cutoff=float(CUTOFF_SEC),  # 5분 컷오프
-        weight="travel_time",  # travel_time 가중치
-    )  # lengths 끝
-
-    reachable_nodes = set(lengths.keys())  # 도달 가능한 노드 집합
-    SG = Gp.subgraph(reachable_nodes).copy()  # 도달 가능한 노드만 서브그래프 구성
-
-    gdf_edges = ox.graph_to_gdfs(SG, nodes=False, edges=True, fill_edge_geometry=True)  # 서브그래프 엣지를 GeoDataFrame으로
-    gdf_edges_ll = gdf_edges.to_crs(MAP_CRS).reset_index(drop=True)  # 4326으로 변환(표시용)
-
+    # ✅ (중요) Folium 지도는 먼저 만들어서 "무조건" 띄울 수 있게 한다
     m = folium.Map(location=[lat, lon], zoom_start=14, tiles="cartodbpositron")  # Folium 지도 생성
 
     folium.GeoJson(  # 남현동 경계 폴리곤 레이어
@@ -362,12 +333,6 @@ with right:  # 우측 컬럼 시작
         style_function=lambda x: {"color": "#00aa00", "weight": 2, "fillOpacity": 0.03},  # 스타일
     ).add_to(m)  # 지도에 추가
 
-    folium.GeoJson(  # 5분 도달 네트워크 엣지 레이어
-        gdf_edges_ll,  # 4326 엣지
-        name=f"5분 도달 네트워크({CUTOFF_MIN}min)",  # 레이어명
-        style_function=lambda x: {"color": "#0055ff", "weight": 3, "opacity": 0.75},  # 스타일
-    ).add_to(m)  # 지도에 추가
-
     gdf_bus_nam_ll = gdf_bus_nam.to_crs(MAP_CRS).copy()  # 남현동 버스정류장을 4326으로 변환
     for ars, nm, typ, geom in zip(  # 버스정류장을 순회
         gdf_bus_nam_ll["ARS_ID"].tolist(),  # 정류장 ID
@@ -381,41 +346,88 @@ with right:  # 우측 컬럼 시작
             icon=folium.Icon(color="blue", icon="bus", prefix="fa"),  # 버스 아이콘
         ).add_to(m)  # 지도에 추가
 
-    bus_pts_proj = gdf_bus_nam.to_crs(Gp.graph["crs"]).copy()  # 버스정류장을 그래프 CRS로 투영
-    bus_nodes = [int(ox.distance.nearest_nodes(Gp, X=float(p.x), Y=float(p.y))) for p in bus_pts_proj.geometry.tolist()]  # 각 정류장 최근접 노드
-    bus_nodes_in = [bn for bn in bus_nodes if bn in reachable_nodes][:50]  # 5분 도달영역 안의 정류장 노드만(최대 50개)
+    # ✅ (중요) 네트워크/라우팅은 실패해도 지도는 나오게 try/except로 감싼다
+    try:  # OSMnx/NetworkX 파트 전체를 보호
+        ox.settings.log_console = False  # OSMnx 로그 끄기
+        G = ox.graph_from_point((lat, lon), dist=int(GRAPH_DIST_M), network_type="walk", simplify=True)  # OSM 그래프 다운로드
 
-    link_features = []  # 연결 경로 GeoJSON feature 리스트
-    for bn in bus_nodes_in:  # 정류장 노드를 순회
-        route = nx.shortest_path(Gp, int(source_node), int(bn), weight="travel_time")  # 최단경로(노드열)
-        line = LineString([(float(Gp.nodes[n]["x"]), float(Gp.nodes[n]["y"])) for n in route])  # 노드열을 LineString으로
-        line_ll = gpd.GeoSeries([line], crs=Gp.graph["crs"]).to_crs(MAP_CRS).iloc[0]  # 4326으로 변환
-        link_features.append({"type": "Feature", "properties": {}, "geometry": line_ll.__geo_interface__})  # feature 추가
+        try:  # OSMnx 2.x 스타일
+            G = ox.distance.add_edge_lengths(G)  # edge length 추가
+        except Exception:  # OSMnx 1.x 스타일
+            G = ox.add_edge_lengths(G)  # edge length 추가
 
-    if len(link_features) > 0:  # 경로가 있으면
-        folium.GeoJson(  # 신규->버스정류장 연결경로 레이어
-            {"type": "FeatureCollection", "features": link_features},  # FeatureCollection
-            name="신규->버스정류장 연결경로",  # 레이어명
-            style_function=lambda x: {"color": "#ff9900", "weight": 4, "opacity": 0.85},  # 스타일(주황)
+        Gp = ox.project_graph(G)  # 그래프를 미터 CRS로 투영
+        pt_proj = gpd.GeoSeries([Point(lon, lat)], crs=MAP_CRS).to_crs(Gp.graph["crs"]).iloc[0]  # 중심점을 그래프 CRS로
+        px, py = float(pt_proj.x), float(pt_proj.y)  # 중심점 투영 좌표
+
+        for u, v, k, data in Gp.edges(keys=True, data=True):  # 모든 엣지 순회
+            data["travel_time"] = float(data.get("length", 0.0)) / float(WALK_SPEED_MPS)  # 보행 시간(초) 계산
+
+        source_node = ox.distance.nearest_nodes(Gp, X=px, Y=py)  # 중심점에 가장 가까운 노드 찾기
+
+        lengths = nx.single_source_dijkstra_path_length(  # 다익스트라로 도달시간 계산
+            Gp,  # 그래프
+            int(source_node),  # 시작 노드
+            cutoff=float(CUTOFF_SEC),  # 5분 컷오프
+            weight="travel_time",  # travel_time 가중치
+        )  # lengths 끝
+
+        reachable_nodes = set(lengths.keys())  # 도달 가능한 노드 집합
+        SG = Gp.subgraph(reachable_nodes).copy()  # 도달 가능한 노드만 서브그래프 구성
+
+        gdf_edges = ox.graph_to_gdfs(SG, nodes=False, edges=True, fill_edge_geometry=True)  # 서브그래프 엣지를 GeoDataFrame으로
+        gdf_edges_ll = gdf_edges.to_crs(MAP_CRS).reset_index(drop=True)  # 4326으로 변환(표시용)
+
+        folium.GeoJson(  # 5분 도달 네트워크 엣지 레이어
+            gdf_edges_ll,  # 4326 엣지
+            name=f"5분 도달 네트워크({CUTOFF_MIN}min)",  # 레이어명
+            style_function=lambda x: {"color": "#0055ff", "weight": 3, "opacity": 0.75},  # 스타일
         ).add_to(m)  # 지도에 추가
 
+        bus_pts_proj = gdf_bus_nam.to_crs(Gp.graph["crs"]).copy()  # 버스정류장을 그래프 CRS로 투영
+        bus_nodes = [int(ox.distance.nearest_nodes(Gp, X=float(p.x), Y=float(p.y))) for p in bus_pts_proj.geometry.tolist()]  # 각 정류장 최근접 노드
+        bus_nodes_in = [bn for bn in bus_nodes if bn in reachable_nodes][:50]  # 5분 도달영역 안의 정류장 노드만(최대 50개)
+
+        link_features = []  # 연결 경로 GeoJSON feature 리스트
+        for bn in bus_nodes_in:  # 정류장 노드를 순회
+            route = nx.shortest_path(Gp, int(source_node), int(bn), weight="travel_time")  # 최단경로(노드열)
+            line = LineString([(float(Gp.nodes[n]["x"]), float(Gp.nodes[n]["y"])) for n in route])  # 노드열을 LineString으로
+            line_ll = gpd.GeoSeries([line], crs=Gp.graph["crs"]).to_crs(MAP_CRS).iloc[0]  # 4326으로 변환
+            link_features.append({"type": "Feature", "properties": {}, "geometry": line_ll.__geo_interface__})  # feature 추가
+
+        if len(link_features) > 0:  # 경로가 있으면
+            folium.GeoJson(  # 신규->버스정류장 연결경로 레이어
+                {"type": "FeatureCollection", "features": link_features},  # FeatureCollection
+                name="신규->버스정류장 연결경로",  # 레이어명
+                style_function=lambda x: {"color": "#ff9900", "weight": 4, "opacity": 0.85},  # 스타일(주황)
+            ).add_to(m)  # 지도에 추가
+
+    except Exception as e:  # 네트워크 실패 시
+        st.warning(f"OSMnx/NetworkX 경로 계산이 실패했습니다. (지도는 정상 표시) | 에러: {type(e).__name__}: {e}")  # 경고 출력
+
+    # ✅ routes_all.gpkg는 파일이 없거나 레이어가 많아도 죽지 않게 방어
     try:  # routes_all.gpkg 레이어 목록을 시도
         layers = fiona.listlayers(ROUTES_ALL_GPKG)  # 레이어 이름 리스트
     except Exception:  # 실패하면
         layers = [None]  # 레이어 미지정으로 한 번만 읽기
 
     for lyr in layers:  # 레이어를 순회
-        gdf_routes = gpd.read_file(ROUTES_ALL_GPKG, layer=lyr) if lyr else gpd.read_file(ROUTES_ALL_GPKG)  # 레이어별 로드
-        if gdf_routes.crs is None:  # CRS가 없다고 가정되면
-            gdf_routes = gdf_routes.set_crs(TARGET_CRS)  # 5179로 가정하여 부여
-        folium.GeoJson(  # 기존 커버 경로 레이어
-            gdf_routes.to_crs(MAP_CRS),  # 4326 변환
-            name=("기존 커버 경로" if lyr is None else f"기존 커버 경로({lyr})"),  # 레이어명
-            style_function=lambda x: {"color": "#7a7a7a", "weight": 5, "opacity": 0.70},  # 스타일(회색)
-        ).add_to(m)  # 지도에 추가
+        try:  # 레이어별 로드 실패 방어
+            gdf_routes = gpd.read_file(ROUTES_ALL_GPKG, layer=lyr) if lyr else gpd.read_file(ROUTES_ALL_GPKG)  # 레이어별 로드
+            if gdf_routes.crs is None:  # CRS가 없다고 가정되면
+                gdf_routes = gdf_routes.set_crs(TARGET_CRS)  # 5179로 가정하여 부여
+            folium.GeoJson(  # 기존 커버 경로 레이어
+                gdf_routes.to_crs(MAP_CRS),  # 4326 변환
+                name=("기존 커버 경로" if lyr is None else f"기존 커버 경로({lyr})"),  # 레이어명
+                style_function=lambda x: {"color": "#7a7a7a", "weight": 5, "opacity": 0.70},  # 스타일(회색)
+            ).add_to(m)  # 지도에 추가
+        except Exception as e:  # 개별 레이어 실패 시
+            st.warning(f"routes_all.gpkg 레이어 로드 실패: {lyr} | {type(e).__name__}: {e}")  # 경고 출력
 
     folium.LayerControl(collapsed=False).add_to(m)  # 레이어 컨트롤 추가
-    st_folium(m, width=None, height=MAP_HEIGHT_PX)  # Folium 지도 출력(우측)
+
+    # ✅ (중요) key를 주면 Streamlit 리렌더링에서 Folium 컴포넌트가 안정적이다
+    st_folium(m, width=None, height=MAP_HEIGHT_PX, key=f"folium_{sel_gid}")  # Folium 지도 출력(우측)
 
 
 
