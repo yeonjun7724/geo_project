@@ -71,6 +71,9 @@ st.markdown(  # CSS를 주입하기 위한 markdown 호출
       /* 타이틀 자간 조금 줄여서 보기 좋게 */  /* 설명 주석 */
       h1, h2, h3 { letter-spacing: -0.02em; }  /* 타이틀 자간 */
 
+      /* ✅ 메인 타이틀 가운데 정렬 */  /* 설명 주석 */
+      h1 { text-align: center; }  /* 타이틀 중앙 정렬 */
+
       /* 캡션 색상 */  /* 설명 주석 */
       .stCaption { color: #666; }  /* 캡션 색 */
 
@@ -228,9 +231,8 @@ all_gids = gdf_grid_nam[GRID_ID_COL].astype(str).tolist()  # gid 목록 추출
 # 4) KPI + gid 선택 + 신규 KPI(면적 km² / 인구 추정) 
 # =========================================================  
 
-st.markdown('<div class="kpi-wrap">', unsafe_allow_html=True)  # KPI 카드 시작
 st.subheader("KPI")  # KPI 제목
-st.markdown('<div class="small-muted">gid를 선택하면 KPI와 좌/우 지도가 동시에 갱신됩니다.</div>', unsafe_allow_html=True)  # 안내문
+st.caption("gid를 선택하면 KPI와 좌/우 지도가 동시에 갱신됩니다.")  # 안내문
 
 sel_gid = st.selectbox("남현동 격자 gid 선택", options=all_gids, index=0, key="gid_select")  # 선택박스
 
@@ -297,13 +299,11 @@ c5.metric("비커버 비율", f"{unc_rate*100:.2f}%")  # 비커버 비율
 c6.metric("새로 커버된 비커버 면적(km²)", f"{newly_covered_area_km2:,.4f}")  # ✅ km² 단위(소수 4자리)
 c7.metric("새로 커버된 비커버 인구(추정)", f"{newly_covered_pop_est:,.0f}")  # 인구 추정
 
-st.markdown("</div>", unsafe_allow_html=True)  # KPI 카드 종료
-
 # =========================================================  
 # 5) 좌(Pydeck) / 우(Folium)  # 섹션 설명 주석
 # =========================================================  
 
-st.markdown('<div class="hr"></div>', unsafe_allow_html=True)  # 구분선
+st.markdown("---")  # 구분선
 left, right = st.columns([1, 1], gap="large")  # 좌/우 2컬럼 생성
 
 # =========================================================  
@@ -311,8 +311,8 @@ left, right = st.columns([1, 1], gap="large")  # 좌/우 2컬럼 생성
 # =========================================================  
 
 with left:  # 좌측 컬럼 컨텍스트 시작
-    st.markdown('<div class="soft-card">', unsafe_allow_html=True)  # 카드 시작
-    st.markdown('<div class="small-muted">남현동 격자(3D) + KPI 원 + 신규 커버 원 + 행정동 경계</div>', unsafe_allow_html=True)  # 안내문
+    st.subheader("인구기반 따릉이 신규 정류소 배치")  # ✅ 파이덱 제목
+    st.caption("남현동 격자(3D) + KPI 원 + 신규 커버 원 + 행정동 경계")  # 안내문
 
     gdf_ll = gdf_in.to_crs(MAP_CRS).copy()  # KPI 내부 격자를 4326 변환
 
@@ -422,15 +422,14 @@ with left:  # 좌측 컬럼 컨텍스트 시작
     )
 
     st.pydeck_chart(deck, height=MAP_HEIGHT_PX, width="stretch")  # ✅ 좌측 지도 높이 고정
-    st.markdown("</div>", unsafe_allow_html=True)  # 카드 종료
 
 # =========================================================  
 # 5-B) RIGHT: Folium (KPI 반경 레이어 제거)  # 섹션 설명 주석
 # =========================================================  
 
 with right:  # 우측 컬럼 컨텍스트 시작
-    st.markdown('<div class="soft-card">', unsafe_allow_html=True)  # 카드 시작
-    st.markdown('<div class="small-muted">남현동 경계 + 비커버 + 신규 커버 + 5분 네트워크 (KPI 반경 표시는 제거)</div>', unsafe_allow_html=True)  # 안내문
+    st.subheader("신규 정류소 배치에 따른 커버리지 분석")  # ✅ 폴리움 제목
+    st.caption("남현동 경계 + 비커버 + 신규 커버 + 5분 네트워크 (KPI 반경 표시는 제거)")  # 안내문
 
     center_ll = gpd.GeoSeries([sel_center_5179], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]  # 중심점 4326
     lon, lat = float(center_ll.x), float(center_ll.y)  # lon/lat 추출
@@ -488,5 +487,3 @@ with right:  # 우측 컬럼 컨텍스트 시작
 
     folium.LayerControl(collapsed=False).add_to(m)  # 레이어 컨트롤 추가
     st_folium(m, width=None, height=MAP_HEIGHT_PX)  # ✅ 우측 지도 높이 고정(좌측과 동일)
-
-    st.markdown("</div>", unsafe_allow_html=True)  # 카드 종료
