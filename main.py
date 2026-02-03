@@ -29,8 +29,8 @@ GRID_SHP = os.path.join(DATA_DIR, "nlsp_021001001.shp")  # 전수 격자(shp) �
 UNCOVERED_GPKG = os.path.join(DATA_DIR, "demo_uncovered.gpkg")  # 비커버 폴리곤(gpkg) 경로(없어도 동작)
 ADMIN_GPKG = os.path.join(DATA_DIR, "demo_admin.gpkg")  # 행정동 경계(gpkg) 경로(남현동 포함)
 
-BUS_STOP_CSV = "data/서울시버스정류소위치정보(20260108).csv"  # 업로드된 버스정류장 CSV(스프레드시트 역할)
-ROUTES_ALL_GPKG = "data/routes_all.gpkg"  # 업로드된 기존 커버 경로 GPKG
+BUS_STOP_CSV = "/data/서울시버스정류소위치정보(20260108).csv"  # 업로드된 버스정류장 CSV(스프레드시트 역할)
+ROUTES_ALL_GPKG = "/data/routes_all.gpkg"  # 업로드된 기존 커버 경로 GPKG
 
 GRID_ID_COL = "gid"  # 격자 ID 컬럼명
 GRID_POP_COL = "val"  # 격자 인구 컬럼명
@@ -416,4 +416,5 @@ with right:  # 우측 컬럼 시작
 
     folium.LayerControl(collapsed=False).add_to(m)  # 레이어 컨트롤 추가
     st_folium(m, width=None, height=MAP_HEIGHT_PX)  # Folium 지도 출력(우측)
+
 
