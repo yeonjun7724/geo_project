@@ -30,7 +30,7 @@ UNCOVERED_GPKG = os.path.join(DATA_DIR, "demo_uncovered.gpkg")  # 비커버 폴�
 ADMIN_GPKG = os.path.join(DATA_DIR, "demo_admin.gpkg")  # 행정동 경계(gpkg) 경로(남현동 포함)
 
 BUS_STOP_CSV = "data/서울시버스정류소위치정보(20260108).csv"  # 업로드된 버스정류장 CSV(스프레드시트 역할)
-ROUTES_ALL_GPKG = "data/routes_all.gpkg"  # 업로드된 기존 커버 경로 GPKG
+ROUTES_ALL_GPKG = "data/routes_all.gpkg"  # 업로드된 기존 커버 경로 GPKG(여러 레이어일 수 있음)
 
 GRID_ID_COL = "gid"  # 격자 ID 컬럼명
 GRID_POP_COL = "val"  # 격자 인구 컬럼명
@@ -171,7 +171,7 @@ with left:  # 좌측 컬럼 시작
     st.subheader("인구기반 따릉이 신규 정류소 배치")  # 좌측 제목
 
     gdf_ll = gdf_in.to_crs(MAP_CRS).copy()  # KPI 내부 격자를 4326으로 변환
-    gdf_ll = gdf_ll[gdf_ll["is_uncovered"] == True].copy()  # 비커버 격자만 남김(요구사항 1)
+    gdf_ll = gdf_ll[gdf_ll["is_uncovered"] == True].copy()  # 비커버 격자만 남김(요구사항)
 
     pop = gdf_ll["pop"].clip(lower=0).astype(float)  # pop 음수 제거 + float 보정
     cap = float(pop.quantile(0.995)) if len(pop) > 0 else 0.0  # 극단치 상한(cap) 계산
@@ -293,8 +293,8 @@ with left:  # 좌측 컬럼 시작
 # =========================================================
 # 4-B) RIGHT: Folium  # 섹션 설명 주석
 # - 버스정류장 아이콘 표시  # 설명 주석
-# - 신규 정류장 -> 남현동 버스정류장 최단경로 시각화  # 설명 주석
-# - routes_all.gpkg를 다른 색상으로 표시(기존 커버)  # 설명 주석
+# - 신규 경로: 반경 내 버스정류장이 있으면 + 5분 내 도달 가능한 정류장까지 경로만 표시  # ✅ 요구사항 반영
+# - 기존 경로: routes_all.gpkg 모든 레이어/칼럼을 합쳐 "기존 커버 경로" 1개만 표시  # ✅ 요구사항 반영
 # =========================================================
 
 with right:  # 우측 컬럼 시작
@@ -303,7 +303,7 @@ with right:  # 우측 컬럼 시작
     center_ll = gpd.GeoSeries([sel_center_5179], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]  # 중심점 4326
     lon, lat = float(center_ll.x), float(center_ll.y)  # 지도 중심 lon/lat
 
-    # ✅ (중요) Folium 지도는 먼저 만들어서 "무조건" 띄울 수 있게 한다
+    # ✅ Folium 지도는 먼저 생성(네트워크가 실패해도 지도는 뜨게)
     m = folium.Map(location=[lat, lon], zoom_start=14, tiles="cartodbpositron")  # Folium 지도 생성
 
     folium.GeoJson(  # 남현동 경계 폴리곤 레이어
@@ -333,6 +333,7 @@ with right:  # 우측 컬럼 시작
         style_function=lambda x: {"color": "#00aa00", "weight": 2, "fillOpacity": 0.03},  # 스타일
     ).add_to(m)  # 지도에 추가
 
+    # ✅ 버스정류장 마커(남현동 내부 전체)
     gdf_bus_nam_ll = gdf_bus_nam.to_crs(MAP_CRS).copy()  # 남현동 버스정류장을 4326으로 변환
     for ars, nm, typ, geom in zip(  # 버스정류장을 순회
         gdf_bus_nam_ll["ARS_ID"].tolist(),  # 정류장 ID
@@ -346,8 +347,8 @@ with right:  # 우측 컬럼 시작
             icon=folium.Icon(color="blue", icon="bus", prefix="fa"),  # 버스 아이콘
         ).add_to(m)  # 지도에 추가
 
-    # ✅ (중요) 네트워크/라우팅은 실패해도 지도는 나오게 try/except로 감싼다
-    try:  # OSMnx/NetworkX 파트 전체를 보호
+    # ✅ 네트워크/라우팅 파트는 실패해도 지도는 뜨게 try/except로 감싼다
+    try:  # OSMnx/NetworkX 파트 시작
         ox.settings.log_console = False  # OSMnx 로그 끄기
         G = ox.graph_from_point((lat, lon), dist=int(GRAPH_DIST_M), network_type="walk", simplify=True)  # OSM 그래프 다운로드
 
@@ -384,50 +385,82 @@ with right:  # 우측 컬럼 시작
             style_function=lambda x: {"color": "#0055ff", "weight": 3, "opacity": 0.75},  # 스타일
         ).add_to(m)  # 지도에 추가
 
-        bus_pts_proj = gdf_bus_nam.to_crs(Gp.graph["crs"]).copy()  # 버스정류장을 그래프 CRS로 투영
-        bus_nodes = [int(ox.distance.nearest_nodes(Gp, X=float(p.x), Y=float(p.y))) for p in bus_pts_proj.geometry.tolist()]  # 각 정류장 최근접 노드
-        bus_nodes_in = [bn for bn in bus_nodes if bn in reachable_nodes][:50]  # 5분 도달영역 안의 정류장 노드만(최대 50개)
+        # =========================================================
+        # ✅ 신규 경로(요구사항 반영)  # 섹션 설명 주석
+        # - 반경(1250m) 내 버스정류장이 "있으면"  # 조건 1
+        # - 그 중 5분 내 도달 가능한 정류장까지의 최단경로만 표시  # 조건 2
+        # - 반경 내 정류장이 없으면 신규 경로는 "아예 표시하지 않음"  # 조건 3
+        # =========================================================
 
-        link_features = []  # 연결 경로 GeoJSON feature 리스트
-        for bn in bus_nodes_in:  # 정류장 노드를 순회
-            route = nx.shortest_path(Gp, int(source_node), int(bn), weight="travel_time")  # 최단경로(노드열)
-            line = LineString([(float(Gp.nodes[n]["x"]), float(Gp.nodes[n]["y"])) for n in route])  # 노드열을 LineString으로
-            line_ll = gpd.GeoSeries([line], crs=Gp.graph["crs"]).to_crs(MAP_CRS).iloc[0]  # 4326으로 변환
-            link_features.append({"type": "Feature", "properties": {}, "geometry": line_ll.__geo_interface__})  # feature 추가
+        gdf_bus_in_radius = gdf_bus_nam[gdf_bus_nam.geometry.intersects(station_buffer_5179)].copy()  # 반경 내 정류장만(5179 기준)
 
-        if len(link_features) > 0:  # 경로가 있으면
-            folium.GeoJson(  # 신규->버스정류장 연결경로 레이어
-                {"type": "FeatureCollection", "features": link_features},  # FeatureCollection
-                name="신규->버스정류장 연결경로",  # 레이어명
-                style_function=lambda x: {"color": "#ff9900", "weight": 4, "opacity": 0.85},  # 스타일(주황)
-            ).add_to(m)  # 지도에 추가
+        if len(gdf_bus_in_radius) == 0:  # 반경 내 정류장이 없으면
+            pass  # 신규 경로는 추가하지 않음(요구사항)
+        else:  # 반경 내 정류장이 있으면
+            bus_pts_proj = gdf_bus_in_radius.to_crs(Gp.graph["crs"]).copy()  # 반경 내 정류장을 그래프 CRS로 투영
+            bus_nodes = [int(ox.distance.nearest_nodes(Gp, X=float(p.x), Y=float(p.y))) for p in bus_pts_proj.geometry.tolist()]  # 정류장별 최근접 노드
+
+            bus_nodes_reachable = [bn for bn in bus_nodes if bn in reachable_nodes]  # 5분 도달 가능한 정류장 노드만
+
+            link_features = []  # 연결 경로 GeoJSON feature 리스트
+            for bn in bus_nodes_reachable[:50]:  # 도달 가능한 정류장 노드를 순회(최대 50개)
+                route = nx.shortest_path(Gp, int(source_node), int(bn), weight="travel_time")  # 최단경로(노드열)
+                line = LineString([(float(Gp.nodes[n]["x"]), float(Gp.nodes[n]["y"])) for n in route])  # 노드열을 LineString으로
+                line_ll = gpd.GeoSeries([line], crs=Gp.graph["crs"]).to_crs(MAP_CRS).iloc[0]  # 4326으로 변환
+                link_features.append({"type": "Feature", "properties": {}, "geometry": line_ll.__geo_interface__})  # feature 추가
+
+            if len(link_features) > 0:  # 경로가 있으면
+                folium.GeoJson(  # 신규->버스정류장 연결경로 레이어
+                    {"type": "FeatureCollection", "features": link_features},  # FeatureCollection
+                    name="신규->버스정류장 연결경로",  # 레이어명
+                    style_function=lambda x: {"color": "#ff9900", "weight": 4, "opacity": 0.85},  # 스타일(주황)
+                ).add_to(m)  # 지도에 추가
+            else:  # 반경 내 정류장은 있지만 5분 도달이 없으면
+                pass  # 신규 경로는 추가하지 않음(요구사항)
 
     except Exception as e:  # 네트워크 실패 시
         st.warning(f"OSMnx/NetworkX 경로 계산이 실패했습니다. (지도는 정상 표시) | 에러: {type(e).__name__}: {e}")  # 경고 출력
 
-    # ✅ routes_all.gpkg는 파일이 없거나 레이어가 많아도 죽지 않게 방어
-    try:  # routes_all.gpkg 레이어 목록을 시도
-        layers = fiona.listlayers(ROUTES_ALL_GPKG)  # 레이어 이름 리스트
-    except Exception:  # 실패하면
-        layers = [None]  # 레이어 미지정으로 한 번만 읽기
+    # =========================================================
+    # ✅ 기존 경로(요구사항 반영)  # 섹션 설명 주석
+    # - routes_all.gpkg의 "모든 레이어/칼럼"을 읽되  # 입력
+    # - 스키마 충돌 방지를 위해 geometry만 남기고  # 처리
+    # - 하나로 합쳐 '기존 커버 경로' 1개 레이어로만 표시  # 출력
+    # =========================================================
 
-    for lyr in layers:  # 레이어를 순회
-        try:  # 레이어별 로드 실패 방어
-            gdf_routes = gpd.read_file(ROUTES_ALL_GPKG, layer=lyr) if lyr else gpd.read_file(ROUTES_ALL_GPKG)  # 레이어별 로드
-            if gdf_routes.crs is None:  # CRS가 없다고 가정되면
-                gdf_routes = gdf_routes.set_crs(TARGET_CRS)  # 5179로 가정하여 부여
-            folium.GeoJson(  # 기존 커버 경로 레이어
-                gdf_routes.to_crs(MAP_CRS),  # 4326 변환
-                name=("기존 커버 경로" if lyr is None else f"기존 커버 경로({lyr})"),  # 레이어명
+    gdf_routes_all = None  # 합쳐진 결과를 담을 변수
+
+    if os.path.exists(ROUTES_ALL_GPKG):  # 파일이 있으면
+        try:  # 레이어 목록 시도
+            layers = fiona.listlayers(ROUTES_ALL_GPKG)  # 레이어 이름 리스트
+        except Exception:  # 실패하면
+            layers = [None]  # 레이어 미지정으로 한 번만 읽기
+
+        gdfs = []  # 레이어별 GeoDataFrame 담기
+        for lyr in layers:  # 레이어를 순회
+            try:  # 레이어별 로드 실패 방어
+                gdf_tmp = gpd.read_file(ROUTES_ALL_GPKG, layer=lyr) if lyr else gpd.read_file(ROUTES_ALL_GPKG)  # 레이어별 로드
+                if gdf_tmp is None or len(gdf_tmp) == 0:  # 비어있으면
+                    continue  # 스킵
+                if gdf_tmp.crs is None:  # CRS가 없으면
+                    gdf_tmp = gdf_tmp.set_crs(TARGET_CRS)  # 5179로 가정
+                gdf_tmp = gdf_tmp[["geometry"]].copy()  # ✅ geometry만 남김(칼럼 충돌 제거)
+                gdfs.append(gdf_tmp)  # 리스트에 추가
+            except Exception:  # 실패하면
+                continue  # 다음 레이어로
+
+        if len(gdfs) > 0:  # 하나라도 있으면
+            gdf_routes_all = pd.concat(gdfs, ignore_index=True)  # 모두 합치기
+            gdf_routes_all = gpd.GeoDataFrame(gdf_routes_all, geometry="geometry", crs=gdfs[0].crs)  # GeoDataFrame 보정
+            gdf_routes_all = gdf_routes_all.to_crs(MAP_CRS)  # 4326 변환
+
+            folium.GeoJson(  # ✅ 기존 커버 경로 레이어(1개만)
+                gdf_routes_all,  # 합쳐진 경로
+                name="기존 커버 경로",  # 레이어명(1개)
                 style_function=lambda x: {"color": "#7a7a7a", "weight": 5, "opacity": 0.70},  # 스타일(회색)
             ).add_to(m)  # 지도에 추가
-        except Exception as e:  # 개별 레이어 실패 시
-            st.warning(f"routes_all.gpkg 레이어 로드 실패: {lyr} | {type(e).__name__}: {e}")  # 경고 출력
+    else:  # 파일이 없으면
+        st.info("routes_all.gpkg 파일이 없어 기존 커버 경로를 표시하지 않습니다.")  # 안내 출력
 
     folium.LayerControl(collapsed=False).add_to(m)  # 레이어 컨트롤 추가
-
-    # ✅ (중요) key를 주면 Streamlit 리렌더링에서 Folium 컴포넌트가 안정적이다
-    st_folium(m, width=None, height=MAP_HEIGHT_PX, key=f"folium_{sel_gid}")  # Folium 지도 출력(우측)
-
-
-
+    st_folium(m, width=None, height=MAP_HEIGHT_PX, key=f"folium_{sel_gid}")  # Folium 지도 출력(우측, key로 안정화)
