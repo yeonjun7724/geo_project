@@ -381,7 +381,7 @@ with right:  # 우측 컬럼 시작
 
         folium.GeoJson(  # 5분 도달 네트워크 엣지 레이어
             gdf_edges_ll,  # 4326 엣지
-            name=f"5분 도달 네트워크({CUTOFF_MIN}min)",  # 레이어명
+            name=f"({CUTOFF_MIN}분) 도달 네트워크",  # 레이어명
             style_function=lambda x: {"color": "#0055ff", "weight": 3, "opacity": 0.75},  # 스타일
         ).add_to(m)  # 지도에 추가
 
@@ -412,7 +412,7 @@ with right:  # 우측 컬럼 시작
             if len(link_features) > 0:  # 경로가 있으면
                 folium.GeoJson(  # 신규->버스정류장 연결경로 레이어
                     {"type": "FeatureCollection", "features": link_features},  # FeatureCollection
-                    name="신규->버스정류장 연결경로",  # 레이어명
+                    name="신규 버스정류장 이동경로",  # 레이어명
                     style_function=lambda x: {"color": "#ff9900", "weight": 4, "opacity": 0.85},  # 스타일(주황)
                 ).add_to(m)  # 지도에 추가
             else:  # 반경 내 정류장은 있지만 5분 도달이 없으면
@@ -464,3 +464,4 @@ with right:  # 우측 컬럼 시작
 
     folium.LayerControl(collapsed=False).add_to(m)  # 레이어 컨트롤 추가
     st_folium(m, width=None, height=MAP_HEIGHT_PX, key=f"folium_{sel_gid}")  # Folium 지도 출력(우측, key로 안정화)
+
