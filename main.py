@@ -61,7 +61,7 @@ st.markdown(  # CSS를 주입하기 위한 markdown 호출
     <style>
       /* 화면 풀사이즈 채우기: 폭 제한 제거 + 패딩 최소화 */  /* 설명 주석 */
       .block-container {  /* Streamlit 메인 컨테이너 */
-        padding-top: 0.8rem;  /* 위쪽 여백 */
+        padding-top: 1.0rem;  /* 위쪽 여백 */
         padding-bottom: 1.6rem;  /* 아래쪽 여백 */
         padding-left: 1.0rem;  /* 좌측 여백 */
         padding-right: 1.0rem;  /* 우측 여백 */
@@ -498,5 +498,6 @@ with right:  # 우측 컬럼 컨텍스트 시작
 
     folium.LayerControl(collapsed=False).add_to(m)  # 레이어 컨트롤 추가
     st_folium(m, width=None, height=MAP_HEIGHT_PX)  # ✅ 우측 지도 높이 고정(좌측과 동일)
+
 
 
