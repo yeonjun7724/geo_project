@@ -57,8 +57,8 @@ if MAPBOX_TOKEN:  # 토큰이 존재하면
 st.set_page_config(page_title="따릉이 신규 정류소 배치를 통한 기대효과 대시보드 - 남현동", layout="wide")  # Streamlit 페이지 설정(가로 폭 넓게)
 
 st.markdown(  # CSS를 주입하기 위한 markdown 호출
-    """  # 멀티라인 문자열 시작
-    <style>  /* CSS 시작 */
+    """ 
+    <style>
       /* 화면 풀사이즈 채우기: 폭 제한 제거 + 패딩 최소화 */  /* 설명 주석 */
       .block-container {  /* Streamlit 메인 컨테이너 */
         padding-top: 0.8rem;  /* 위쪽 여백 */
@@ -98,7 +98,7 @@ st.markdown(  # CSS를 주입하기 위한 markdown 호출
 
       /* 구분선 */  /* 설명 주석 */
       .hr { height: 1px; background: #eee; margin: 14px 0; }  /* 구분선 스타일 */
-    </style>  /* CSS 종료 */
+    </style>
     """,  # 문자열 종료
     unsafe_allow_html=True,  # HTML/CSS 허용
 )  # st.markdown 종료
@@ -487,3 +487,4 @@ with right:  # 우측 컬럼 컨텍스트 시작
 
     folium.LayerControl(collapsed=False).add_to(m)  # 레이어 컨트롤 추가
     st_folium(m, width=None, height=MAP_HEIGHT_PX)  # ✅ 우측 지도 높이 고정(좌측과 동일)
+
