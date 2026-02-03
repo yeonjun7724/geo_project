@@ -61,7 +61,7 @@ st.markdown(  # CSS를 주입하기 위한 markdown 호출
     <style>
       /* 화면 풀사이즈 채우기: 폭 제한 제거 + 패딩 최소화 */  /* 설명 주석 */
       .block-container {  /* Streamlit 메인 컨테이너 */
-        padding-top: 1.0rem;  /* 위쪽 여백 */
+        padding-top: 1.2rem;  /* 위쪽 여백 */
         padding-bottom: 1.6rem;  /* 아래쪽 여백 */
         padding-left: 1.0rem;  /* 좌측 여백 */
         padding-right: 1.0rem;  /* 우측 여백 */
@@ -71,7 +71,7 @@ st.markdown(  # CSS를 주입하기 위한 markdown 호출
       /* 타이틀 자간 조금 줄여서 보기 좋게 */  /* 설명 주석 */
       h1, h2, h3 { letter-spacing: -0.02em; }  /* 타이틀 자간 */
 
-      /* ✅ 메인 타이틀 가운데 정렬(Streamlit DOM에 맞춘 안전한 셀렉터) */  /* 설명 주석 */
+      /* 메인 타이틀 가운데 정렬(Streamlit DOM에 맞춘 안전한 셀렉터) */  /* 설명 주석 */
       .stApp h1,  /* 구버전/일부 테마 fallback */
       div[data-testid="stMarkdownContainer"] h1,  /* st.title이 들어가는 컨테이너 */
       .stTitle {  /* 일부 버전에서 타이틀 클래스가 따로 붙음 */
@@ -79,7 +79,7 @@ st.markdown(  # CSS를 주입하기 위한 markdown 호출
         width: 100%;  /* 중앙 정렬 안정화 */
       }  /* 타이틀 중앙 정렬 끝 */
 
-      /* ✅ 제목 위/아래 여백 과하면 줄이기(스크린샷처럼 떠 보일 때) */  /* 설명 주석 */
+      /* 제목 위/아래 여백 과하면 줄이기(스크린샷처럼 떠 보일 때) */  /* 설명 주석 */
       div[data-testid="stMarkdownContainer"] h1 {
         margin-top: 0.2rem;  /* 위 여백 */
         margin-bottom: 0.8rem;  /* 아래 여백 */
@@ -267,7 +267,7 @@ unc_rate = (unc_pop / total_pop) if total_pop > 0 else 0.0  # KPI 원 내부 비
 
 newly_covered_geom_5179 = None  # 새로 커버된 비커버 geometry 초기화
 newly_covered_area_m2 = 0.0  # 새로 커버된 비커버 면적(㎡) 초기화
-newly_covered_area_km2 = 0.0  # ✅ 새로 커버된 비커버 면적(km²) 초기화
+newly_covered_area_km2 = 0.0  # 새로 커버된 비커버 면적(km²) 초기화
 newly_covered_pop_est = 0.0  # 새로 커버된 비커버 인구(추정) 초기화
 
 if len(gdf_unc) > 0:  # 비커버가 있으면
@@ -276,7 +276,7 @@ if len(gdf_unc) > 0:  # 비커버가 있으면
     newly_covered_geom_5179 = unc_union_nam.intersection(station_buffer_5179)  # 새로 커버된 비커버 계산
     if newly_covered_geom_5179 is not None and (not newly_covered_geom_5179.is_empty):  # 유효하면
         newly_covered_area_m2 = float(newly_covered_geom_5179.area)  # 면적(㎡)
-        newly_covered_area_km2 = newly_covered_area_m2 / 1_000_000.0  # ✅ 면적(km²)로 변환(㎡→km²)
+        newly_covered_area_km2 = newly_covered_area_m2 / 1_000_000.0  # 면적(km²)로 변환(㎡→km²)
 
         cand = gdf_grid_nam[gdf_grid_nam["is_uncovered"] == True].copy()  # 비커버 격자만
         cand = cand[cand.geometry.intersects(newly_covered_geom_5179)].copy()  # 새로커버와 교차하는 격자만
@@ -307,7 +307,7 @@ c2.metric("KPI 반경 내 격자 수", f"{len(gdf_in):,}")  # 격자 수
 c3.metric("총 인구", f"{total_pop:,.0f}")  # 총 인구
 c4.metric("비커버 인구", f"{unc_pop:,.0f}")  # 비커버 인구
 c5.metric("비커버 비율", f"{unc_rate*100:.2f}%")  # 비커버 비율
-c6.metric("새로 커버된 비커버 면적(km²)", f"{newly_covered_area_km2:,.4f}")  # ✅ km² 단위(소수 4자리)
+c6.metric("새로 커버된 비커버 면적(km²)", f"{newly_covered_area_km2:,.4f}")  # km² 단위(소수 4자리)
 c7.metric("새로 커버된 비커버 인구(추정)", f"{newly_covered_pop_est:,.0f}")  # 인구 추정
 
 # =========================================================  
@@ -322,8 +322,7 @@ left, right = st.columns([1, 1], gap="large")  # 좌/우 2컬럼 생성
 # =========================================================  
 
 with left:  # 좌측 컬럼 컨텍스트 시작
-    st.subheader("인구기반 따릉이 신규 정류소 배치")  # ✅ 파이덱 제목
-    st.caption("남현동 격자(3D) + KPI 원 + 신규 커버 원 + 행정동 경계")  # 안내문
+    st.subheader("인구기반 따릉이 신규 정류소 배치")  # 파이덱 제목
 
     gdf_ll = gdf_in.to_crs(MAP_CRS).copy()  # KPI 내부 격자를 4326 변환
 
@@ -432,15 +431,14 @@ with left:  # 좌측 컬럼 컨텍스트 시작
         tooltip={"text": "gid: {gid}\npop: {pop}\nuncovered: {is_uncovered}"},
     )
 
-    st.pydeck_chart(deck, height=MAP_HEIGHT_PX, width="stretch")  # ✅ 좌측 지도 높이 고정
+    st.pydeck_chart(deck, height=MAP_HEIGHT_PX, width="stretch")  # 좌측 지도 높이 고정
 
 # =========================================================  
 # 5-B) RIGHT: Folium (KPI 반경 레이어 제거)  # 섹션 설명 주석
 # =========================================================  
 
 with right:  # 우측 컬럼 컨텍스트 시작
-    st.subheader("신규 정류소 배치에 따른 커버리지 분석")  # ✅ 폴리움 제목
-    st.caption("남현동 경계 + 비커버 + 신규 커버 + 5분 네트워크 (KPI 반경 표시는 제거)")  # 안내문
+    st.subheader("신규 정류소 배치에 따른 커버리지 분석")  # 폴리움 제목
 
     center_ll = gpd.GeoSeries([sel_center_5179], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]  # 중심점 4326
     lon, lat = float(center_ll.x), float(center_ll.y)  # lon/lat 추출
@@ -494,10 +492,11 @@ with right:  # 우측 컬럼 컨텍스트 시작
     if len(gdf_edges_ll) > 0:  # 네트워크가 있으면
         folium.GeoJson(gdf_edges_ll, name=f"5분 네트워크({CUTOFF_MIN}min)", style_function=lambda x: {"color": "#0055ff", "weight": 3, "opacity": 0.85}).add_to(m)  # 네트워크 추가
 
-    # ✅ KPI 반경 레이어는 우측(Folium)에 넣지 않음 → 범례에 "KPI 반경"이 생기지 않음  # 설명 주석
+    # KPI 반경 레이어는 우측(Folium)에 넣지 않음 → 범례에 "KPI 반경"이 생기지 않음  # 설명 주석
 
     folium.LayerControl(collapsed=False).add_to(m)  # 레이어 컨트롤 추가
-    st_folium(m, width=None, height=MAP_HEIGHT_PX)  # ✅ 우측 지도 높이 고정(좌측과 동일)
+    st_folium(m, width=None, height=MAP_HEIGHT_PX)  # 우측 지도 높이 고정(좌측과 동일)
+
 
 
 
