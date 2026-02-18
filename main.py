@@ -293,42 +293,44 @@ with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 �
             top_iso = cands.loc[cands["pop"].idxmax()].copy()
 
     # =========================================================
-    # 8) 최종 TOP 격자 → 모든 정류장/역까지 최단경로 라인 계산
-    #    우선순위: 네트워크TOP(top_iso) 있으면 사용, 없으면 버퍼TOP(top_buf) 사용
+    # 8) TOP 격자 → 모든 정류장/역까지 최단경로 라인 계산
+    #    - 버퍼 지도용: top_buf 에서 출발
+    #    - 네트워크 지도용: top_iso 에서 출발
     # =========================================================
-    final_top      = top_iso if top_iso is not None else top_buf       # 최종 TOP 격자 결정
-    final_top_mode = "네트워크TOP" if top_iso is not None else "버퍼TOP"  # 모드 이름 문자열
 
-    final_routes   = []         # 최단경로 LineString 수집 목록
-    final_src_node = None       # 최종 TOP 격자에 매핑된 출발 노드 ID
+    def _build_routes(top_row):
+        """
+        top_row: 출발점이 될 격자 행 (Series, centroid_m 컬럼 포함)
+        반환: LineString 목록 (지도에 그릴 최단경로들)
+        """
+        routes = []                                                    # 결과 경로 목록
+        if top_row is None:                                            # 출발 격자가 없으면 빈 목록 반환
+            return routes
 
-    if DRAW_ALL_ROUTES and final_top is not None:                      # 경로 표시 ON이고 TOP 격자가 있으면
-
-        # TOP 격자 중심점을 4326으로 변환 후 최근접 노드 찾기
-        final_cent_ll = (
-            gpd.GeoSeries([final_top["centroid_m"]], crs=TARGET_CRS)
+        # 격자 중심점을 4326으로 변환 후 그래프 노드에 매핑
+        cent_ll = (
+            gpd.GeoSeries([top_row["centroid_m"]], crs=TARGET_CRS)
             .to_crs(MAP_CRS)
-            .iloc[0]                                                    # 중심점 Point (4326)
+            .iloc[0]                                                   # 중심점 Point (4326)
         )
-        final_src_node = ox.distance.nearest_nodes(                    # 출발 노드 ID
-            G, X=float(final_cent_ll.x), Y=float(final_cent_ll.y)
+        src_node = ox.distance.nearest_nodes(                          # 출발 노드 ID
+            G, X=float(cent_ll.x), Y=float(cent_ll.y)
         )
 
-        # 도착 노드 목록 = 버스 노드 + 지하철 노드 (순서 유지하며 중복 제거)
-        target_nodes = list(dict.fromkeys(list(bus_nodes) + list(subway_nodes)))
+        # 도착 노드 목록: 버스 노드 + 지하철 노드 (순서 유지하며 중복 제거)
+        targets = list(dict.fromkeys(list(bus_nodes) + list(subway_nodes)))
+        if len(targets) > MAX_DRAW_ROUTES:                             # 경로가 너무 많으면
+            targets = targets[:MAX_DRAW_ROUTES]                        # 앞부분만 사용 (성능 안전장치)
 
-        if len(target_nodes) > MAX_DRAW_ROUTES:                        # 경로가 너무 많으면
-            target_nodes = target_nodes[:MAX_DRAW_ROUTES]              # 앞부분 MAX_DRAW_ROUTES개만 사용
-
-        for tn in target_nodes:                                        # 각 도착 노드에 대해 최단경로 계산
-            if tn == final_src_node:                                   # 출발과 도착이 같으면 경로 불필요
+        for tn in targets:                                             # 각 도착 노드에 대해
+            if tn == src_node:                                         # 출발 == 도착이면 경로 불필요
                 continue
 
             try:
-                path_nodes = nx.shortest_path(                         # Dijkstra 기반 최단경로 노드 리스트
-                    G, source=final_src_node, target=tn, weight="length"
+                path_nodes = nx.shortest_path(                         # Dijkstra 최단경로 노드 리스트
+                    G, source=src_node, target=tn, weight="length"
                 )
-            except nx.NetworkXNoPath:                                  # 경로가 없으면 (연결 끊김 등)
+            except nx.NetworkXNoPath:                                  # 연결되지 않은 경우
                 continue
             except Exception:                                          # 기타 예외
                 continue
@@ -336,32 +338,32 @@ with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 �
             if len(path_nodes) < 2:                                    # 노드가 1개 이하면 선 생성 불가
                 continue
 
-            # ── 경로를 LineString으로 변환 ──────────────────────────────────
-            # ※ ox.utils_graph.route_to_gdf()는 OSMnx v2.0+에서 제거됨 → 직접 구성
-            #   엣지별 geometry를 읽어 이어 붙이고, 없으면 노드 좌표 직선으로 대체
+            # ── 경로를 LineString으로 변환 ──────────────────────────────
+            # ※ ox.utils_graph.route_to_gdf()는 OSMnx v2.0+에서 제거됨
+            #   엣지별 geometry를 직접 읽어 이어 붙이고, 없으면 노드 좌표 직선으로 대체
             try:
                 edge_geoms = []                                        # 엣지 geometry 수집 목록
                 for u, v in zip(path_nodes[:-1], path_nodes[1:]):     # 인접 노드 쌍(u→v) 순회
                     edge_dict = G.get_edge_data(u, v)                  # u→v 엣지 데이터 가져오기
-                    if edge_dict is None:                              # 엣지가 없으면 (이론상 미발생)
+                    if edge_dict is None:                              # 엣지 없으면 스킵
                         continue
-                    # 멀티그래프: 같은 방향 엣지가 여러 개 가능 → 길이가 가장 짧은 엣지 선택
+                    # 멀티그래프: 같은 방향 엣지 여러 개 → 가장 짧은 것 선택
                     best = min(edge_dict.values(), key=lambda e: e.get("length", float("inf")))
                     geom = best.get("geometry")                        # 엣지 형상 (LineString or None)
-                    if geom is not None and not geom.is_empty:         # 형상이 있으면 그대로 사용
+                    if geom is not None and not geom.is_empty:         # 형상이 있으면 사용
                         edge_geoms.append(geom)
-                    else:                                              # 형상이 없으면 노드 좌표로 직선 생성
-                        n1, n2 = G.nodes[u], G.nodes[v]               # 시작/끝 노드 속성 ({x, y, ...})
+                    else:                                              # 없으면 노드 좌표로 직선 생성
+                        n1, n2 = G.nodes[u], G.nodes[v]               # 시작/끝 노드 속성
                         edge_geoms.append(LineString([(n1["x"], n1["y"]), (n2["x"], n2["y"])]))
 
-                if not edge_geoms:                                     # 수집된 형상이 없으면 건너뜀
+                if not edge_geoms:                                     # 형상 없으면 건너뜀
                     continue
 
                 line = unary_union(edge_geoms)                         # 모든 엣지 형상 합치기
 
-            except Exception:                                          # 예외 발생 시 노드 좌표 직선으로 폴백
+            except Exception:                                          # 예외 시 노드 좌표 직선으로 폴백
                 try:
-                    coords = [(G.nodes[n]["x"], G.nodes[n]["y"]) for n in path_nodes]  # (경도, 위도) 목록
+                    coords = [(G.nodes[n]["x"], G.nodes[n]["y"]) for n in path_nodes]
                     line = LineString(coords)                           # 직선 연결 LineString
                 except Exception:
                     continue                                            # 그래도 실패하면 건너뜀
@@ -369,14 +371,21 @@ with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 �
             if line is None or line.is_empty:                          # 빈 geometry면 건너뜀
                 continue
 
-            # geometry 타입별 처리
-            if line.geom_type == "LineString":                         # 단일 선이면 그대로 저장
-                final_routes.append(line)
-            elif line.geom_type == "MultiLineString":                  # 복합 선이면 모든 파트 저장
-                for part in line.geoms:                                # 각 파트 순회
+            # geometry 타입별 저장
+            if line.geom_type == "LineString":                         # 단일 선
+                routes.append(line)
+            elif line.geom_type == "MultiLineString":                  # 복합 선: 모든 파트 저장
+                for part in line.geoms:
                     if part is not None and not part.is_empty and len(part.coords) >= 2:
-                        final_routes.append(part)                      # 좌표가 2개 이상인 유효 파트만 추가
-            # LineString / MultiLineString 외 타입(예: GeometryCollection)은 무시
+                        routes.append(part)
+
+        return routes                                                  # 완성된 경로 목록 반환
+
+    # 버퍼 지도용: 버퍼 TOP 격자 → 각 정류장/역 최단경로
+    buf_routes = _build_routes(top_buf) if DRAW_ALL_ROUTES else []    # DRAW_ALL_ROUTES=False면 빈 목록
+
+    # 네트워크 지도용: 네트워크(iso) TOP 격자 → 각 정류장/역 최단경로
+    iso_routes = _build_routes(top_iso) if DRAW_ALL_ROUTES else []    # top_iso 없으면 빈 목록 반환
 
     # =========================================================
     # 9) 지도 표시용(4326) geometry 변환
@@ -408,18 +417,14 @@ with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 �
             gpd.GeoSeries([uncov_iso.simplify(5)], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
         )
 
-    top_buf_ll   = None    # 버퍼 TOP 격자 (4326 GeoDataFrame)
-    top_iso_ll   = None    # 네트워크 TOP 격자 (4326)
-    final_top_ll = None    # 최종 TOP 격자 (4326)
+    top_buf_ll = None    # 버퍼 TOP 격자 (4326 GeoDataFrame)
+    top_iso_ll = None    # 네트워크 TOP 격자 (4326)
 
     if top_buf is not None:                                            # 버퍼 TOP이 있으면
         top_buf_ll = gpd.GeoDataFrame([top_buf], geometry="geometry", crs=TARGET_CRS).to_crs(MAP_CRS)
 
     if top_iso is not None:                                            # 네트워크 TOP이 있으면
         top_iso_ll = gpd.GeoDataFrame([top_iso], geometry="geometry", crs=TARGET_CRS).to_crs(MAP_CRS)
-
-    if final_top is not None:                                          # 최종 TOP이 있으면
-        final_top_ll = gpd.GeoDataFrame([final_top], geometry="geometry", crs=TARGET_CRS).to_crs(MAP_CRS)
 
     kpi = dict(                                                        # KPI 값 딕셔너리 생성
         region_nm      = region_nm,                                    # 행정동 이름
@@ -431,8 +436,8 @@ with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 �
         iso_ratio      = iso_area / admin_area if admin_area > 0 else 0,  # isochrone 비커버 비율
         additional_pop = additional_pop,                               # 추가 발견 비커버 인구
         total_pop      = total_pop,                                    # 행정동 전체 인구
-        final_top_mode = final_top_mode,                               # 최종 TOP 기준 문자열
-        n_routes       = len(final_routes),                            # 실제 그려지는 경로 개수
+        n_buf_routes   = len(buf_routes),                              # 버퍼 지도 경로 개수
+        n_iso_routes   = len(iso_routes),                              # 네트워크 지도 경로 개수
     )
 
 # =========================================================
@@ -475,8 +480,8 @@ with c4:                                                               # 네 번
     )
 
 st.caption(                                                            # 보조 설명 텍스트
-    f"최종 격자 기준: {kpi['final_top_mode']} | "
-    f"지도에 그려진 경로 수: {kpi['n_routes']}개"
+    f"버퍼 TOP 기준 경로: {kpi['n_buf_routes']}개 | "
+    f"네트워크 TOP 기준 경로: {kpi['n_iso_routes']}개"
 )
 
 # =========================================================
@@ -495,6 +500,54 @@ def _number_badge(n, bg):
     """                                                                # 원형 숫자 배지 HTML 반환
 
 
+def _bus_icon_html(name=""):
+    """버스정류장 DivIcon HTML — 파란 원형 배지 + 🚌 이모지"""
+    label = name[:6] if name else "버스"                              # 정류장명 최대 6자 (오버플로 방지)
+    return f"""
+    <div style="
+      display:flex; flex-direction:column; align-items:center;
+      filter: drop-shadow(0 2px 4px rgba(0,0,0,0.45));
+    ">
+      <div style="
+        width:34px; height:34px; border-radius:50%;
+        background:linear-gradient(145deg,#2979ff,#0047cc);
+        color:#fff; font-size:18px;
+        display:flex; align-items:center; justify-content:center;
+        border:2.5px solid #fff;
+      ">🚌</div>
+      <div style="
+        margin-top:3px; padding:1px 5px; font-size:9.5px; font-weight:700;
+        background:rgba(41,121,255,0.92); color:#fff;
+        border-radius:3px; white-space:nowrap; max-width:72px;
+        overflow:hidden; text-overflow:ellipsis;
+      ">{label}</div>
+    </div>"""                                                          # 원형 아이콘 + 이름 라벨 HTML 반환
+
+
+def _sub_icon_html(name=""):
+    """지하철역 DivIcon HTML — 주황 원형 배지 + 🚇 이모지"""
+    label = name[:6] if name else "지하철"                            # 역명 최대 6자
+    return f"""
+    <div style="
+      display:flex; flex-direction:column; align-items:center;
+      filter: drop-shadow(0 2px 5px rgba(0,0,0,0.5));
+    ">
+      <div style="
+        width:38px; height:38px; border-radius:50%;
+        background:linear-gradient(145deg,#ff7043,#e64a19);
+        color:#fff; font-size:20px;
+        display:flex; align-items:center; justify-content:center;
+        border:2.5px solid #fff;
+      ">🚇</div>
+      <div style="
+        margin-top:3px; padding:1px 5px; font-size:9.5px; font-weight:700;
+        background:rgba(230,74,25,0.92); color:#fff;
+        border-radius:3px; white-space:nowrap; max-width:76px;
+        overflow:hidden; text-overflow:ellipsis;
+      ">{label}</div>
+    </div>"""                                                          # 원형 아이콘 + 역명 라벨 HTML 반환
+
+
 def _add_base_layers(m):
     """지도에 공통 레이어 추가: 행정동 경계, 버스정류장 마커, 지하철역 마커"""
 
@@ -506,21 +559,30 @@ def _add_base_layers(m):
     ).add_to(m)
 
     for _, r in bus_ll.iterrows():                                     # 버스정류장 마커 순회
-        folium.CircleMarker(                                           # 원형 마커 (아이콘보다 빠름)
+        stop_name = str(r.get("정류소명", ""))                         # 정류장명 문자열 추출
+        folium.Marker(                                                 # 마커 생성
             location=[r.geometry.y, r.geometry.x],                    # [위도, 경도]
-            radius=5,                                                  # 반지름 (픽셀)
-            color="#0066ff", fill=True, fill_color="#0066ff",          # 파란색 테두리/채움
-            fill_opacity=0.85,                                         # 채움 투명도
-            tooltip=f"버스정류장 | {r.get('정류소명', '')}",            # 툴팁: 정류장명
+            tooltip=f"🚌 버스정류장 | {stop_name}",                   # 마우스오버 툴팁
+            icon=folium.DivIcon(                                       # 커스텀 HTML 아이콘
+                html=_bus_icon_html(stop_name),                        # 버스 아이콘 HTML
+                icon_size=(80, 55),                                    # 아이콘 크기 (가로, 세로)
+                icon_anchor=(40, 55),                                  # 기준점: 아이콘 하단 중앙
+            ),
         ).add_to(m)
 
     for _, r in sub_ll.iterrows():                                     # 지하철역 마커 순회
-        folium.CircleMarker(
-            location=[r.geometry.y, r.geometry.x],
-            radius=7,                                                  # 지하철은 버스보다 약간 크게
-            color="#ff6600", fill=True, fill_color="#ff6600",          # 주황색
-            fill_opacity=0.9,
-            tooltip="지하철역",
+        # 역명 컬럼 탐색 (CSV 컬럼명이 다를 수 있으므로 후보 순서대로 시도)
+        sta_name = str(
+            r.get("역명") or r.get("station_nm") or r.get("역사명") or ""
+        )
+        folium.Marker(                                                 # 마커 생성
+            location=[r.geometry.y, r.geometry.x],                    # [위도, 경도]
+            tooltip=f"🚇 지하철역 | {sta_name}",                      # 마우스오버 툴팁
+            icon=folium.DivIcon(                                       # 커스텀 HTML 아이콘
+                html=_sub_icon_html(sta_name),                         # 지하철 아이콘 HTML
+                icon_size=(84, 60),                                    # 아이콘 크기
+                icon_anchor=(42, 60),                                  # 기준점: 아이콘 하단 중앙
+            ),
         ).add_to(m)
 
 
@@ -618,16 +680,17 @@ if uncov_iso_ll is not None and not uncov_iso_ll.is_empty:            # isochron
 _add_top_grid(m_iso, top_iso_ll, poly_color="#e91e63", label="네트워크 비커버 최대인구")  # 네트워크 TOP 격자
 
 # =========================================================
-# 14) 최종 TOP 격자 + 경로를 두 지도 모두에 표시
+# 14) 각 지도에 TOP 격자 + 경로 표시 (지도별 독립적으로)
 # =========================================================
-if final_top_ll is not None:                                           # 최종 TOP 격자가 있으면
-    _add_top_grid(m_buf, final_top_ll, "#111111", f"최종 TOP({final_top_mode})")  # 버퍼 지도에 표시
-    _add_top_grid(m_iso, final_top_ll, "#111111", f"최종 TOP({final_top_mode})")  # 네트워크 지도에 표시
 
+# 버퍼 지도: 버퍼 TOP 격자 + 버퍼 TOP 기준 경로
+# (최종 TOP 격자는 표시하지 않음 — 버퍼 분석 결과만 표시)
 if DRAW_ALL_ROUTES:                                                    # 경로 표시 ON이면
-    route_layer_name = f"최종 TOP({final_top_mode})→정류장/역 최단경로"
-    _add_routes(m_buf, final_routes, name=route_layer_name)            # 버퍼 지도에 경로 추가
-    _add_routes(m_iso, final_routes, name=route_layer_name)            # 네트워크 지도에 경로 추가
+    _add_routes(m_buf, buf_routes, name="버퍼 TOP→정류장/역 최단경로")  # 버퍼 지도에 버퍼 TOP 경로 추가
+
+# 네트워크 지도: 네트워크 TOP 격자 + 네트워크 TOP 기준 경로
+if DRAW_ALL_ROUTES:                                                    # 경로 표시 ON이면
+    _add_routes(m_iso, iso_routes, name="네트워크 TOP→정류장/역 최단경로")  # 네트워크 지도에 iso TOP 경로 추가
 
 folium.LayerControl(collapsed=False).add_to(m_buf)                    # 레이어 컨트롤 패널 추가
 folium.LayerControl(collapsed=False).add_to(m_iso)
