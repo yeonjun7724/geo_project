@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 import folium
-from folium.plugins import MarkerCluster
 import streamlit as st
 from streamlit_folium import st_folium
 import osmnx as ox
@@ -56,7 +55,7 @@ st.markdown(
 )
 
 st.title("대중교통 커버리지 분석: 직선 버퍼 vs 네트워크 기반")
-st.caption("버스 300 m / 지하철 500 m 기준 · TOP 격자→버스정류장 5분 경로 표시")
+st.caption("버스 300 m / 지하철 500 m 기준 · TOP 격자→버스정류장 5분 최단경로 표시")
 
 # =========================================================
 # 2) 드롭다운(행정동 선택)
@@ -71,7 +70,7 @@ rid = st.selectbox(
 st.caption(f"선택 행정동: {TARGET_IDS.get(rid)}")
 
 # =========================================================
-# 3) 데이터 로드 (스크립트 흐름)
+# 3) 데이터 로드 + 분석 (스크립트)
 # =========================================================
 with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 포함)"):
     # ── (1) 행정동 ──
@@ -82,7 +81,9 @@ with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 �
 
     gdf_sel = gdf_admin[gdf_admin["region_id"] == rid].copy()
     if len(gdf_sel) == 0:
+        st.error("선택한 행정동을 찾을 수 없습니다.")
         st.stop()
+
     region_nm = gdf_sel["region_nm"].iloc[0]
     sel_union = unary_union(gdf_sel.geometry)
 
@@ -166,7 +167,6 @@ with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 �
         bus_nodes = list(ox.distance.nearest_nodes(G, X=bus_ll.geometry.x.values, Y=bus_ll.geometry.y.values))
 
     # (B-1) isochrone 커버리지(정류장 기준 300/500m)
-    # stops 합치기
     gdf_bus_sel2 = gdf_bus_sel.copy()
     gdf_bus_sel2["stop_type"] = "bus"
     gdf_sub_sel2 = gdf_sub_sel.copy()
@@ -222,7 +222,6 @@ with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 �
     false_covered = (~buf_mask) & iso_mask
     additional_pop = float(gdf_grid_sel.loc[false_covered, "pop"].sum())
 
-    # TOP 격자
     top_buf = None
     top_iso = None
 
@@ -237,12 +236,11 @@ with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 �
             top_iso = cands.loc[cands["pop"].idxmax()].copy()
 
     # =========================================================
-    # 7) TOP 격자 중심점 → 버스정류장 5분 최단경로(버퍼/네트워크 각각)
+    # 7) TOP 격자 중심점 → 버스정류장 5분 최단경로
     # =========================================================
     routes_top_buf = []
     routes_top_iso = []
 
-    # helper 없이 스크립트로 직접 작성(중복을 감수)
     if top_buf is not None and len(bus_nodes) > 0:
         top_buf_cent_ll = gpd.GeoSeries([top_buf["centroid_m"]], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
         src = ox.distance.nearest_nodes(G, X=float(top_buf_cent_ll.x), Y=float(top_buf_cent_ll.y))
@@ -300,7 +298,7 @@ with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 �
                 continue
 
     # =========================================================
-    # 8) 표시용 4326 geometry 만들기
+    # 8) 표시용(4326) geometry
     # =========================================================
     cover_buf_ll = None
     uncov_buf_ll = None
@@ -337,7 +335,7 @@ with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 �
     )
 
 # =========================================================
-# 9) KPI 출력
+# 4) KPI 출력
 # =========================================================
 st.markdown("---")
 st.subheader(f"KPI 비교 ({kpi['region_nm']})")
@@ -372,11 +370,11 @@ with c4:
     )
 
 # =========================================================
-# 10) 지도 그리기(좌:버퍼 / 우:네트워크)
-#     - 버스/지하철 아이콘 개선(AwesomeMarkers)
+# 5) 지도 생성(스크립트)
+#    - 클러스터 없음
+#    - 버스/지하철 아이콘: FontAwesome
 # =========================================================
 
-# (공통) 숫자 뱃지 아이콘(최소 HTML)
 def number_badge_html(n, bg):
     return f"""
     <div style="
@@ -387,7 +385,6 @@ def number_badge_html(n, bg):
     ">{n}</div>
     """
 
-# 버스/지하철 아이콘(AwesomeMarkers)
 bus_icon = folium.Icon(color="blue", icon="bus", prefix="fa")
 sub_icon = folium.Icon(color="orange", icon="subway", prefix="fa")
 
@@ -399,33 +396,32 @@ def add_base_layers(m):
         tooltip=folium.GeoJsonTooltip(fields=["region_nm"], aliases=["행정동"]),
     ).add_to(m)
 
-    # 정류장 클러스터(마커 많을 수 있으니)
-    mc_bus = MarkerCluster(name="버스정류장").add_to(m)
+    # 버스정류장(클러스터 없음)
     for _, r in bus_ll.iterrows():
         folium.Marker(
             location=[r.geometry.y, r.geometry.x],
             tooltip=f"버스정류장 | {r.get('정류소명','')}",
             icon=bus_icon,
-        ).add_to(mc_bus)
+        ).add_to(m)
 
-    mc_sub = MarkerCluster(name="지하철역").add_to(m)
+    # 지하철역(클러스터 없음)
     for _, r in sub_ll.iterrows():
         folium.Marker(
             location=[r.geometry.y, r.geometry.x],
             tooltip="지하철역",
             icon=sub_icon,
-        ).add_to(mc_sub)
+        ).add_to(m)
 
-def add_top_grid_and_routes(m, top_ll, routes, poly_color, top_name):
+def add_top_and_routes(m, top_ll, routes, poly_color, label):
     if top_ll is not None and len(top_ll) > 0:
         r = top_ll.iloc[0]
         pop = float(r.get("pop", 0))
         gid = r.get("gid", "")
-        tip = f"{top_name} | gid={gid} | pop={pop:,.0f}"
+        tip = f"{label} | gid={gid} | pop={pop:,.0f}"
 
         folium.GeoJson(
             {"type": "Feature", "properties": {}, "geometry": mapping(r.geometry)},
-            name=f"{top_name} TOP 격자",
+            name=f"{label} TOP 격자",
             style_function=lambda x: {"fillOpacity": 0.50, "fillColor": poly_color, "color": poly_color, "weight": 3},
             tooltip=tip,
         ).add_to(m)
@@ -466,7 +462,7 @@ if uncov_buf_ll is not None and (not uncov_buf_ll.is_empty):
         style_function=lambda x: {"fillOpacity": 0.32, "fillColor": "#cc0000", "color": "#cc0000", "weight": 2},
     ).add_to(m_buf)
 
-add_top_grid_and_routes(m_buf, top_buf_ll, routes_top_buf, poly_color="#ff6600", top_name="버퍼 비커버 최대인구")
+add_top_and_routes(m_buf, top_buf_ll, routes_top_buf, poly_color="#ff6600", label="버퍼 비커버 최대인구")
 folium.LayerControl(collapsed=False).add_to(m_buf)
 m_buf.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
 
@@ -488,12 +484,12 @@ if uncov_iso_ll is not None and (not uncov_iso_ll.is_empty):
         style_function=lambda x: {"fillOpacity": 0.28, "fillColor": "#7a00cc", "color": "#7a00cc", "weight": 2},
     ).add_to(m_iso)
 
-add_top_grid_and_routes(m_iso, top_iso_ll, routes_top_iso, poly_color="#e91e63", top_name="네트워크 비커버 최대인구")
+add_top_and_routes(m_iso, top_iso_ll, routes_top_iso, poly_color="#e91e63", label="네트워크 비커버 최대인구")
 folium.LayerControl(collapsed=False).add_to(m_iso)
 m_iso.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
 
 # =========================================================
-# 11) 화면 배치
+# 6) 화면 배치
 # =========================================================
 st.markdown("---")
 col_l, col_r = st.columns(2, gap="large")
