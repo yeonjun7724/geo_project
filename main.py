@@ -19,7 +19,7 @@ from shapely.geometry import mapping
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 
-ADMIN_SHP  = os.path.join(DATA_DIR, "BND_ADM_DONG_PG.shp")
+ADMIN_SHP  = os.path.join(DATA_DIR, "BND_ADM_DONG_PG.gpkg")
 BUS_XLSX   = os.path.join(DATA_DIR, "서울시버스정류소위치정보(20260108).xlsx")
 SUBWAY_CSV = os.path.join(DATA_DIR, "서울교통공사_1_8호선 역사 좌표(위경도) 정보_20250814.csv")
 GRID_SHP   = os.path.join(DATA_DIR, "nlsp_021001001.shp")
@@ -355,3 +355,4 @@ with st.expander("분석 방법론 비교"):
 | **비커버 판단** | 원 바깥 = 비커버 | 도보로 도달 불가 = 비커버 |
         """
     )
+
