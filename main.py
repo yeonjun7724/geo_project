@@ -32,7 +32,7 @@ BUS_BUFFER_M   = 300.0
 SUB_BUFFER_M   = 500.0
 GRAPH_BUFFER_M = 1500.0
 EDGE_BUFFER_M  = 25.0
-WALK_5MIN_M    = 5 * 60 * 1.4   # 420m
+WALK_5MIN_M    = 500m
 
 MAP_HEIGHT_PX = 650
 
@@ -592,3 +592,4 @@ with st.expander("분석 방법론 비교"):
 | TOP 격자 경로 | TOP→버스/지하철 5분 최단경로 표시 | TOP→버스/지하철 5분 최단경로 표시 |
         """
     )
+
