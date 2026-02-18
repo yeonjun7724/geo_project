@@ -1,477 +1,357 @@
-import os  # 파일 경로/환경변수 사용
-import warnings  # 경고 메시지 제어
-warnings.filterwarnings("ignore")  # 경고 메시지 숨김
+import os, warnings
+warnings.filterwarnings("ignore")
 
-import numpy as np  # 수치 계산 라이브러리
-import pandas as pd  # 데이터프레임 처리 라이브러리
-import geopandas as gpd  # 공간 데이터프레임 처리 라이브러리
-
-import streamlit as st  # Streamlit 웹앱 프레임워크
-import pydeck as pdk  # pydeck(WebGL 지도) 라이브러리
-
-import folium  # folium(Leaflet 지도) 라이브러리
-from streamlit_folium import st_folium  # Streamlit에서 folium 지도 출력
-
-import osmnx as ox  # OpenStreetMap 네트워크 다운로드/가공
-import networkx as nx  # 최단경로/다익스트라 계산
-
-from shapely.geometry import Point, mapping, LineString  # Point 생성 + GeoJSON 변환 + LineString
-import fiona  # GPKG 레이어 목록 확인용(있으면 사용)
+import numpy as np
+import pandas as pd
+import geopandas as gpd
+import folium
+import streamlit as st
+from streamlit_folium import st_folium
+import osmnx as ox
+import networkx as nx
+from shapely.ops import unary_union
+from shapely.geometry import mapping
 
 # =========================================================
-# 0) PATHS / CONSTANTS  # 섹션 설명 주석
+# 0) 상수 / 경로
 # =========================================================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # 현재 app.py 파일의 절대경로 기준 폴더
-DATA_DIR = os.path.join(BASE_DIR, "data")  # data 폴더 경로 구성
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
 
-GRID_SHP = os.path.join(DATA_DIR, "nlsp_021001001.shp")  # 전수 격자(shp) 경로
-UNCOVERED_GPKG = os.path.join(DATA_DIR, "demo_uncovered.gpkg")  # 비커버 폴리곤(gpkg) 경로(없어도 동작)
-ADMIN_GPKG = os.path.join(DATA_DIR, "demo_admin.gpkg")  # 행정동 경계(gpkg) 경로(남현동 포함)
+ADMIN_SHP  = os.path.join(DATA_DIR, "BND_ADM_DONG_PG.shp")
+BUS_XLSX   = os.path.join(DATA_DIR, "서울시버스정류소위치정보(20260108).xlsx")
+SUBWAY_CSV = os.path.join(DATA_DIR, "서울교통공사_1_8호선 역사 좌표(위경도) 정보_20250814.csv")
+GRID_SHP   = os.path.join(DATA_DIR, "nlsp_021001001.shp")
 
-BUS_STOP_CSV = "data/서울시버스정류소위치정보(20260108).csv"  # 업로드된 버스정류장 CSV(스프레드시트 역할)
-ROUTES_ALL_GPKG = "data/routes_all.gpkg"  # 업로드된 기존 커버 경로 GPKG(여러 레이어일 수 있음)
+NAMHYEON_ID = "11210630"
 
-GRID_ID_COL = "gid"  # 격자 ID 컬럼명
-GRID_POP_COL = "val"  # 격자 인구 컬럼명
+TARGET_CRS = 5179
+MAP_CRS    = 4326
 
-TARGET_CRS = 5179  # 분석용 CRS(미터 기반, 면적/거리 계산)
-MAP_CRS = 4326  # 지도 표출용 CRS(위경도)
+BUS_BUFFER_M   = 300.0
+SUB_BUFFER_M   = 500.0
+GRAPH_BUFFER_M = 1500.0
+EDGE_BUFFER_M  = 25.0
 
-KPI_RADIUS_M = 1250  # KPI 반경(미터)
-NEW_STATION_BUFFER_M = 1250  # 신규 정류장 커버 반경(미터)
-
-WALK_SPEED_MPS = 1.4  # 보행 속도(m/s)
-CUTOFF_MIN = 5  # 네트워크 컷오프 시간(분)
-CUTOFF_SEC = CUTOFF_MIN * 60  # 네트워크 컷오프 시간(초)
-
-GRAPH_DIST_M = 3500  # OSM 그래프 다운로드 반경(미터)
-MAP_HEIGHT_PX = 720  # 좌/우 지도 높이(px)
-
-CARTO_POSITRON_GL = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"  # 토큰 없이도 되는 basemap
-
-MAPBOX_TOKEN = os.getenv("MAPBOX_API_KEY") or os.getenv("MAPBOX_TOKEN")  # Mapbox 토큰(있으면 사용)
-if MAPBOX_TOKEN:  # 토큰이 존재하면
-    pdk.settings.mapbox_api_key = MAPBOX_TOKEN  # pydeck에 토큰 설정
+MAP_HEIGHT_PX = 600
 
 # =========================================================
-# 1) Streamlit Page / UI Theme  # 섹션 설명 주석
+# 1) 페이지 설정
 # =========================================================
 
-st.set_page_config(page_title="따릉이 신규 정류소 배치를 통한 기대효과 대시보드 - 남현동", layout="wide")  # 페이지 설정(가로 레이아웃)
-
-st.markdown(  # CSS를 주입하기 위한 markdown 호출
-    """
-    <style>
-      .block-container { padding: 1.2rem 1.0rem 1.6rem 1.0rem; max-width: none; }  /* 컨테이너 패딩/폭 */
-      h1, h2, h3 { letter-spacing: -0.02em; }  /* 타이틀 자간 */
-      .stApp h1, div[data-testid="stMarkdownContainer"] h1, .stTitle { text-align: center; width: 100%; }  /* 타이틀 중앙정렬 */
-      div[data-testid="stMarkdownContainer"] h1 { margin-top: 0.2rem; margin-bottom: 0.8rem; }  /* 타이틀 여백 */
-      .stCaption { color: #666; }  /* 캡션 색상 */
-    </style>
-    """,  # CSS 문자열
-    unsafe_allow_html=True,  # HTML/CSS 허용
+st.set_page_config(
+    page_title="남현동 대중교통 커버리지 비교: 직선 버퍼 vs 네트워크",
+    layout="wide",
 )
 
-st.title("따릉이 신규 정류소 배치를 통한 기대효과 대시보드 - 남현동")  # 타이틀 출력
+st.markdown(
+    """
+    <style>
+      .block-container { padding: 1.2rem 1.0rem 1.6rem 1.0rem; max-width: none; }
+      h1, h2, h3 { letter-spacing: -0.02em; }
+      .stApp h1, div[data-testid="stMarkdownContainer"] h1 { text-align: center; width: 100%; }
+      div[data-testid="stMarkdownContainer"] h1 { margin-top: 0.2rem; margin-bottom: 0.8rem; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.title("남현동 대중교통 커버리지 분석: 직선 버퍼 vs 네트워크 기반")
+st.caption("버스정류장 300 m / 지하철역 500 m 도보 기준 — 남현동(11210630)")
 
 # =========================================================
-# 2) DATA LOAD (스크립트형)  # 섹션 설명 주석
+# 2) 데이터 로드 + 분석 (캐싱)
 # =========================================================
 
-gdf_grid = gpd.read_file(GRID_SHP)  # 격자 shapefile 로드
-gdf_grid = gdf_grid.to_crs(TARGET_CRS)  # 분석 CRS로 변환(미터 기반)
-gdf_grid[GRID_ID_COL] = gdf_grid[GRID_ID_COL].astype(str)  # gid 문자열로 통일
-gdf_grid["pop"] = pd.to_numeric(gdf_grid.get(GRID_POP_COL, 0), errors="coerce").fillna(0).astype(float)  # pop 생성/정리
-gdf_grid = gdf_grid[[GRID_ID_COL, "pop", "geometry"]].copy()  # 필요한 컬럼만 유지
+def _to_ll(geom):
+    """EPSG:5179 → 4326 변환 헬퍼"""
+    return gpd.GeoSeries([geom], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
 
-gdf_admin = gpd.read_file(ADMIN_GPKG)  # 행정동 gpkg 로드
-gdf_admin = gdf_admin.to_crs(TARGET_CRS)  # 분석 CRS로 변환
-name_col = next(c for c in ["ADM_NM", "region_nm", "emd_nm", "dong_nm", "법정동명", "행정동명"] if c in gdf_admin.columns)  # 이름 컬럼 선택(있다고 가정)
-gdf_namhyeon = gdf_admin[gdf_admin[name_col].astype(str).str.contains("남현", na=False)].copy()  # 남현동 행만 필터
-nam_union = gdf_namhyeon.geometry.union_all()  # 남현동 폴리곤을 union으로 합치기
 
-gdf_grid_nam = gpd.clip(gdf_grid[gdf_grid.geometry.intersects(nam_union)], gdf_namhyeon).copy()  # 남현동 격자만 clip
-gdf_grid_nam["is_uncovered"] = False  # 기본값으로 커버 처리
+@st.cache_resource(show_spinner=False)
+def compute_all():
+    # ── 행정동 ──
+    gdf_admin = gpd.read_file(ADMIN_SHP)
+    gdf_admin["region_id"] = gdf_admin["ADM_CD"].astype(str).str.strip()
+    gdf_admin = gdf_admin.to_crs(TARGET_CRS)
+    gdf_nam = gdf_admin[gdf_admin["region_id"] == NAMHYEON_ID].copy()
+    if len(gdf_nam) == 0:
+        raise ValueError(f"행정동 {NAMHYEON_ID} 을 찾을 수 없습니다.")
+    nam_union = unary_union(gdf_nam.geometry)
 
-if os.path.exists(UNCOVERED_GPKG):  # 비커버 파일이 있으면
-    gdf_unc = gpd.read_file(UNCOVERED_GPKG)  # 비커버 gpkg 로드
-    gdf_unc = gdf_unc.to_crs(TARGET_CRS)  # 분석 CRS로 변환
-    gdf_unc = gdf_unc[["geometry"]].copy()  # geometry만 남김
-    unc_union = gdf_unc.geometry.union_all()  # 비커버 폴리곤 union
-    gdf_grid_nam["is_uncovered"] = gdf_grid_nam.geometry.intersects(unc_union)  # 비커버 교차 격자만 True
-else:  # 비커버 파일이 없으면
-    gdf_unc = gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs=TARGET_CRS)  # 빈 GeoDataFrame 생성
+    # ── 버스정류장 ──
+    bus_raw = pd.read_excel(BUS_XLSX)
+    bus_raw["X좌표"] = pd.to_numeric(bus_raw["X좌표"], errors="coerce")
+    bus_raw["Y좌표"] = pd.to_numeric(bus_raw["Y좌표"], errors="coerce")
+    bus_raw = bus_raw.dropna(subset=["X좌표", "Y좌표"])
+    gdf_bus = gpd.GeoDataFrame(
+        bus_raw, geometry=gpd.points_from_xy(bus_raw["X좌표"], bus_raw["Y좌표"]), crs=MAP_CRS
+    ).to_crs(TARGET_CRS)
+    gdf_bus_nam = gdf_bus[gdf_bus.geometry.within(nam_union)].copy()
+    gdf_bus_nam["stop_type"] = "bus"
 
-# =========================================================
-# 2-B) BUS STOP CSV LOAD (컬럼 고정)  # 섹션 설명 주석
-# - CSV 컬럼: NODE_ID, ARS_ID, 정류소명, X좌표, Y좌표, 정류소타입  # 설명 주석
-# - X좌표=경도(lon), Y좌표=위도(lat) 로 간주  # 설명 주석
-# =========================================================
+    # ── 지하철 ──
+    try:
+        sub_raw = pd.read_csv(SUBWAY_CSV, encoding="utf-8")
+    except UnicodeDecodeError:
+        sub_raw = pd.read_csv(SUBWAY_CSV, encoding="cp949")
+    sub_raw["경도"] = pd.to_numeric(sub_raw["경도"], errors="coerce")
+    sub_raw["위도"] = pd.to_numeric(sub_raw["위도"], errors="coerce")
+    sub_raw = sub_raw.dropna(subset=["경도", "위도"])
+    gdf_sub = gpd.GeoDataFrame(
+        sub_raw, geometry=gpd.points_from_xy(sub_raw["경도"], sub_raw["위도"]), crs=MAP_CRS
+    ).to_crs(TARGET_CRS)
+    gdf_sub_nam = gdf_sub[gdf_sub.geometry.within(nam_union)].copy()
+    gdf_sub_nam["stop_type"] = "subway"
 
-df_bus = pd.read_csv(BUS_STOP_CSV, encoding="utf-8", low_memory=False)  # 버스정류장 CSV 로드
-df_bus["X좌표"] = pd.to_numeric(df_bus["X좌표"], errors="coerce")  # X좌표를 숫자(경도)로 변환
-df_bus["Y좌표"] = pd.to_numeric(df_bus["Y좌표"], errors="coerce")  # Y좌표를 숫자(위도)로 변환
-df_bus = df_bus.dropna(subset=["X좌표", "Y좌표"]).copy()  # 좌표가 없는 행 제거
-df_bus["ARS_ID"] = df_bus["ARS_ID"].astype(str)  # 정류장 ID는 문자열로 통일(표시/툴팁 안정화)
-df_bus["정류소명"] = df_bus["정류소명"].astype(str)  # 정류소명 문자열화
-df_bus["정류소타입"] = df_bus["정류소타입"].astype(str)  # 타입 문자열화
+    # ── 인구 격자 ──
+    gdf_grid = gpd.read_file(GRID_SHP).to_crs(TARGET_CRS)
+    gdf_grid["gid"] = gdf_grid["gid"].astype(str)
+    gdf_grid["pop"] = pd.to_numeric(gdf_grid.get("val", 0), errors="coerce").fillna(0.0)
+    gdf_grid_nam = gpd.clip(
+        gdf_grid[gdf_grid.geometry.intersects(nam_union)], gdf_nam
+    )[["gid", "pop", "geometry"]].copy()
 
-gdf_bus = gpd.GeoDataFrame(  # 좌표 -> 포인트로 변환하여 GeoDataFrame 생성
-    df_bus[["NODE_ID", "ARS_ID", "정류소명", "정류소타입", "X좌표", "Y좌표"]].copy(),  # 필요한 컬럼만
-    geometry=gpd.points_from_xy(df_bus["X좌표"], df_bus["Y좌표"]),  # (lon, lat)로 포인트 생성
-    crs=MAP_CRS,  # 원본 좌표계는 WGS84(4326)로 가정
-)  # gdf_bus 생성 끝
-gdf_bus_5179 = gdf_bus.to_crs(TARGET_CRS)  # 공간필터(남현동 내부)용으로 5179 변환
-gdf_bus_nam = gdf_bus_5179[gdf_bus_5179.geometry.within(nam_union)].copy()  # 남현동 폴리곤 내부 정류장만 선택
+    # ── (A) 직선 버퍼 커버리지 ──
+    bufs = []
+    if len(gdf_bus_nam):
+        bufs.append(unary_union(gdf_bus_nam.geometry.buffer(BUS_BUFFER_M)))
+    if len(gdf_sub_nam):
+        bufs.append(unary_union(gdf_sub_nam.geometry.buffer(SUB_BUFFER_M)))
+    cover_buf = unary_union(bufs) if bufs else None
+    uncov_buf = nam_union.difference(cover_buf) if cover_buf else nam_union
 
-all_gids = gdf_grid_nam[GRID_ID_COL].astype(str).tolist()  # 남현동 격자 gid 목록
+    # ── (B) Isochrone(네트워크) 커버리지 ──
+    poly_graph_ll = (
+        gpd.GeoSeries([nam_union.buffer(GRAPH_BUFFER_M)], crs=TARGET_CRS)
+        .to_crs(MAP_CRS).iloc[0]
+    )
+    ox.settings.log_console = False
+    G = ox.graph_from_polygon(poly_graph_ll, network_type="walk", simplify=True)
 
-# =========================================================
-# 3) KPI + gid 선택  # 섹션 설명 주석
-# =========================================================
+    gdf_stops = gpd.GeoDataFrame(
+        pd.concat([gdf_bus_nam, gdf_sub_nam], ignore_index=True),
+        geometry="geometry", crs=TARGET_CRS,
+    )
+    gdf_stops_ll = gdf_stops.to_crs(MAP_CRS).copy()
+    gdf_stops_ll["v_node"] = ox.distance.nearest_nodes(
+        G, X=gdf_stops_ll.geometry.x.values, Y=gdf_stops_ll.geometry.y.values
+    )
 
-st.subheader("KPI")  # KPI 섹션 제목
-st.caption("gid를 선택하면 KPI와 좌/우 지도가 동시에 갱신됩니다.")  # 안내문
+    iso_polys = []
+    for _, r in gdf_stops_ll.iterrows():
+        v = int(r["v_node"])
+        cutoff = BUS_BUFFER_M if r["stop_type"] == "bus" else SUB_BUFFER_M
+        try:
+            Gsub = nx.ego_graph(G, v, radius=cutoff, distance="length", undirected=True)
+        except Exception:
+            continue
+        if Gsub.number_of_edges() == 0:
+            continue
+        _, gdf_edges = ox.graph_to_gdfs(Gsub, nodes=True, edges=True, fill_edge_geometry=True)
+        poly_m = unary_union(gdf_edges.to_crs(TARGET_CRS).geometry.buffer(EDGE_BUFFER_M))
+        if poly_m and not poly_m.is_empty:
+            iso_polys.append(poly_m)
 
-sel_gid = st.selectbox("남현동 격자 gid 선택", options=all_gids, index=0, key="gid_select")  # gid 선택 UI
+    cover_iso = unary_union(iso_polys) if iso_polys else None
+    uncov_iso = nam_union.difference(cover_iso) if cover_iso else nam_union
 
-sel_poly = gdf_grid_nam.loc[gdf_grid_nam[GRID_ID_COL] == str(sel_gid), "geometry"].iloc[0]  # 선택 격자 폴리곤
-sel_center_5179 = sel_poly.centroid  # 선택 격자 중심점(5179)
+    # ── KPI 계산 ──
+    admin_area = nam_union.area
+    buf_area = uncov_buf.area if uncov_buf and not uncov_buf.is_empty else 0
+    iso_area = uncov_iso.area if uncov_iso and not uncov_iso.is_empty else 0
 
-kpi_circle_5179 = sel_center_5179.buffer(float(KPI_RADIUS_M))  # KPI 반경 원(5179)
-station_buffer_5179 = sel_center_5179.buffer(float(NEW_STATION_BUFFER_M))  # 신규 정류장 커버 반경 원(5179)
+    centroids = gdf_grid_nam.geometry.centroid
+    buf_mask = centroids.within(uncov_buf) if (uncov_buf and not uncov_buf.is_empty) else pd.Series(False, index=gdf_grid_nam.index)
+    iso_mask = centroids.within(uncov_iso) if (uncov_iso and not uncov_iso.is_empty) else pd.Series(False, index=gdf_grid_nam.index)
 
-gdf_in = gdf_grid_nam[gdf_grid_nam.geometry.intersects(kpi_circle_5179)].copy()  # KPI 반경과 교차하는 격자만
-total_pop = float(gdf_in["pop"].sum())  # KPI 반경 내 총 인구
-unc_pop = float(gdf_in.loc[gdf_in["is_uncovered"] == True, "pop"].sum())  # KPI 반경 내 비커버 인구
-unc_rate = (unc_pop / total_pop) if total_pop > 0 else 0.0  # 비커버 비율(0으로 나눔 방지)
+    buf_pop = float(gdf_grid_nam.loc[buf_mask, "pop"].sum())
+    iso_pop = float(gdf_grid_nam.loc[iso_mask, "pop"].sum())
+    total_pop = float(gdf_grid_nam["pop"].sum())
 
-c1, c2, c3, c4, c5 = st.columns(5)  # KPI 카드 5개 컬럼 생성
-c1.metric("선택 gid", str(sel_gid))  # 선택 gid 표시
-c2.metric("KPI 반경 내 격자 수", f"{len(gdf_in):,}")  # 격자 수 표시
-c3.metric("총 인구", f"{total_pop:,.0f}")  # 총 인구 표시
-c4.metric("비커버 인구", f"{unc_pop:,.0f}")  # 비커버 인구 표시
-c5.metric("비커버 비율", f"{unc_rate*100:.2f}%")  # 비커버 비율 표시
+    # 추가 발견 비커버 인구: 버퍼로는 커버인데 isochrone으로는 비커버
+    false_covered = (~buf_mask) & iso_mask
+    additional_pop = float(gdf_grid_nam.loc[false_covered, "pop"].sum())
 
-# =========================================================
-# 4) 좌(Pydeck) / 우(Folium)  # 섹션 설명 주석
-# =========================================================
+    kpi = {
+        "buf_uncov_km2": buf_area / 1e6,
+        "iso_uncov_km2": iso_area / 1e6,
+        "buf_uncov_pop": buf_pop,
+        "iso_uncov_pop": iso_pop,
+        "buf_ratio": buf_area / admin_area if admin_area > 0 else 0,
+        "iso_ratio": iso_area / admin_area if admin_area > 0 else 0,
+        "additional_pop": additional_pop,
+        "total_pop": total_pop,
+    }
 
-st.markdown("---")  # 구분선
-left, right = st.columns([1, 1], gap="large")  # 좌/우 레이아웃 구성
+    # ── 표시용 4326 변환 ──
+    nam_ll = gdf_nam.to_crs(MAP_CRS)
+    bounds = nam_ll.total_bounds
+    center = [(bounds[1] + bounds[3]) / 2, (bounds[0] + bounds[2]) / 2]
 
-# =========================================================
-# 4-A) LEFT: Pydeck  # 섹션 설명 주석
-# - 비커버 격자만 회색/컬러로 보이도록 구성  # 설명 주석
-# - 막대(3D) 색상은 노랑->빨강 그라데이션  # 설명 주석
-# =========================================================
+    cover_buf_ll  = _to_ll(cover_buf.intersection(nam_union)) if cover_buf else None
+    uncov_buf_ll  = _to_ll(uncov_buf) if (uncov_buf and not uncov_buf.is_empty) else None
+    cover_iso_cl  = cover_iso.intersection(nam_union) if cover_iso else None
+    cover_iso_ll  = _to_ll(cover_iso_cl.simplify(5)) if cover_iso_cl else None
+    uncov_iso_ll  = _to_ll(uncov_iso.simplify(5)) if (uncov_iso and not uncov_iso.is_empty) else None
 
-with left:  # 좌측 컬럼 시작
-    st.subheader("인구기반 따릉이 신규 정류소 배치")  # 좌측 제목
+    bus_ll = gdf_bus_nam.to_crs(MAP_CRS)
+    sub_ll = gdf_sub_nam.to_crs(MAP_CRS)
 
-    gdf_ll = gdf_in.to_crs(MAP_CRS).copy()  # KPI 내부 격자를 4326으로 변환
-    gdf_ll = gdf_ll[gdf_ll["is_uncovered"] == True].copy()  # 비커버 격자만 남김(요구사항)
-
-    pop = gdf_ll["pop"].clip(lower=0).astype(float)  # pop 음수 제거 + float 보정
-    cap = float(pop.quantile(0.995)) if len(pop) > 0 else 0.0  # 극단치 상한(cap) 계산
-    pop_c = np.minimum(pop, cap) if cap > 0 else pop  # cap 적용(pop_c)
-    gdf_ll["elev"] = (np.power(pop_c, 1.80) * 0.02).astype(float)  # 3D 높이(elevation) 계산
-
-    denom = float(pop_c.max() - pop_c.min()) if len(pop_c) > 0 else 0.0  # 정규화 분모
-    t = ((pop_c - float(pop_c.min())) / denom).clip(0, 1) if denom > 0 else pd.Series([0.0] * len(pop_c), index=gdf_ll.index)  # 0~1 정규화
-    gdf_ll["r"] = 255  # 빨강 채널 고정
-    gdf_ll["g"] = (255 * (1.0 - t)).round().astype(int)  # 초록 채널은 t가 커질수록 감소(노랑->빨강)
-    gdf_ll["b"] = 0  # 파랑 채널 0 고정
-    gdf_ll["a"] = 190  # 알파(투명도) 고정
-
-    grid_records = []  # pydeck PolygonLayer에 넣을 레코드 리스트
-    for gid, popv, elev, rr, gg, bb, aa, geom in zip(  # 필요한 값을 한 번에 순회
-        gdf_ll[GRID_ID_COL].astype(str).tolist(),  # gid 리스트
-        gdf_ll["pop"].tolist(),  # pop 리스트
-        gdf_ll["elev"].tolist(),  # elev 리스트
-        gdf_ll["r"].tolist(),  # r 리스트
-        gdf_ll["g"].tolist(),  # g 리스트
-        gdf_ll["b"].tolist(),  # b 리스트
-        gdf_ll["a"].tolist(),  # a 리스트
-        gdf_ll.geometry.tolist(),  # geometry 리스트
-    ):
-        polys = [geom] if geom.geom_type == "Polygon" else list(geom.geoms)  # Polygon/MultiPolygon 처리
-        for poly in polys:  # 폴리곤 단위로 레코드 생성
-            grid_records.append({  # 레코드 추가
-                "gid": gid,  # gid 저장
-                "pop": float(popv),  # pop 저장
-                "elev": float(elev),  # elev 저장
-                "color": [int(rr), int(gg), int(bb), int(aa)],  # RGBA 저장
-                "polygon": list(map(list, poly.exterior.coords)),  # exterior 좌표를 [lon,lat] 리스트로
-            })  # 레코드 끝
-
-    center_ll = gpd.GeoSeries([sel_center_5179], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]  # 중심점(4326)
-    kpi_circle_ll = gpd.GeoSeries([kpi_circle_5179], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]  # KPI 원(4326)
-    station_buf_ll = gpd.GeoSeries([station_buffer_5179], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]  # 신규 커버 원(4326)
-
-    admin_geojson = {  # 남현동 경계 GeoJSON 구성
-        "type": "FeatureCollection",  # GeoJSON 타입
-        "features": [  # feature 목록
-            {"type": "Feature", "properties": {"name": "남현동"}, "geometry": mapping(geom)}  # geometry를 GeoJSON으로
-            for geom in gdf_namhyeon.to_crs(MAP_CRS).geometry.tolist()  # 남현동 폴리곤 순회
-        ],  # features 끝
-    }  # admin_geojson 끝
-
-    layer_admin = pdk.Layer(  # 남현동 경계 레이어
-        "GeoJsonLayer",  # 레이어 타입
-        data=admin_geojson,  # 데이터
-        stroked=True,  # 외곽선 표시
-        filled=False,  # 내부 채우기 없음
-        get_line_color=[0, 0, 0, 230],  # 선 색상(검정)
-        line_width_min_pixels=2,  # 최소 두께
-        pickable=False,  # 클릭 비활성
-    )  # layer_admin 끝
-
-    layer_grid = pdk.Layer(  # 비커버 격자 3D 레이어
-        "PolygonLayer",  # 레이어 타입
-        data=grid_records,  # 레코드
-        get_polygon="polygon",  # 폴리곤 좌표 키
-        extruded=True,  # 3D extrusion 켜기
-        filled=True,  # 채우기
-        stroked=False,  # 외곽선 끄기
-        get_elevation="elev",  # 높이 컬럼
-        elevation_scale=1,  # 스케일
-        get_fill_color="color",  # 색상 컬럼(노랑->빨강)
-        pickable=True,  # 툴팁 표시를 위해 pickable
-    )  # layer_grid 끝
-
-    layer_kpi = pdk.Layer(  # KPI 원 레이어
-        "PolygonLayer",  # 레이어 타입
-        data=[{"polygon": list(map(list, kpi_circle_ll.exterior.coords))}],  # 원 exterior 좌표
-        get_polygon="polygon",  # 키
-        filled=False,  # 채우기 없음
-        stroked=True,  # 외곽선만
-        get_line_color=[30, 30, 30, 220],  # 선 색
-        line_width_min_pixels=2,  # 선 두께
-        pickable=False,  # 클릭 비활성
-    )  # layer_kpi 끝
-
-    layer_station_buf = pdk.Layer(  # 신규 커버 반경 원 레이어
-        "PolygonLayer",  # 레이어 타입
-        data=[{"polygon": list(map(list, station_buf_ll.exterior.coords))}],  # 원 좌표
-        get_polygon="polygon",  # 키
-        filled=False,  # 채우기 없음
-        stroked=True,  # 외곽선
-        get_line_color=[0, 120, 0, 220],  # 초록 선
-        line_width_min_pixels=2,  # 두께
-        pickable=False,  # 클릭 비활성
-    )  # layer_station_buf 끝
-
-    layer_station = pdk.Layer(  # 신규 정류장(점) 레이어
-        "ScatterplotLayer",  # 레이어 타입
-        data=[{"lon": float(center_ll.x), "lat": float(center_ll.y)}],  # 점 데이터
-        get_position="[lon, lat]",  # 좌표 키
-        get_radius=70,  # 점 반경
-        pickable=True,  # 툴팁 표시 가능
-    )  # layer_station 끝
-
-    view = pdk.ViewState(  # 카메라 시점
-        latitude=float(center_ll.y),  # 위도
-        longitude=float(center_ll.x),  # 경도
-        zoom=14,  # 줌
-        pitch=55,  # 기울기
-        bearing=20,  # 회전
-    )  # view 끝
-
-    map_style = CARTO_POSITRON_GL if not MAPBOX_TOKEN else "mapbox://styles/mapbox/light-v11"  # 스타일 선택
-
-    deck = pdk.Deck(  # pydeck 데크 구성
-        layers=[layer_admin, layer_grid, layer_kpi, layer_station_buf, layer_station],  # 레이어 목록
-        initial_view_state=view,  # 초기 시점
-        map_style=map_style,  # 지도 스타일
-        tooltip={"text": "gid: {gid}\npop: {pop}"},  # 툴팁 텍스트
-    )  # deck 끝
-
-    st.pydeck_chart(deck, height=MAP_HEIGHT_PX, width="stretch")  # 좌측 지도 출력
+    return {
+        "kpi": kpi,
+        "nam_ll": nam_ll,
+        "bounds": bounds,
+        "center": center,
+        "cover_buf_ll": cover_buf_ll,
+        "uncov_buf_ll": uncov_buf_ll,
+        "cover_iso_ll": cover_iso_ll,
+        "uncov_iso_ll": uncov_iso_ll,
+        "bus_ll": bus_ll,
+        "sub_ll": sub_ll,
+    }
 
 # =========================================================
-# 4-B) RIGHT: Folium  # 섹션 설명 주석
-# - 버스정류장 아이콘 표시  # 설명 주석
-# - 신규 경로: 반경 내 버스정류장이 있으면 + 5분 내 도달 가능한 정류장까지 경로만 표시  #  요구사항 반영
-# - 기존 경로: routes_all.gpkg 모든 레이어/칼럼을 합쳐 "기존 커버 경로" 1개만 표시  #  요구사항 반영
+# 3) 지도 생성 함수
 # =========================================================
 
-with right:  # 우측 컬럼 시작
-    st.subheader("신규 정류소 배치에 따른 커버리지 분석")  # 우측 제목
-
-    center_ll = gpd.GeoSeries([sel_center_5179], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]  # 중심점 4326 변환
-    lon, lat = float(center_ll.x), float(center_ll.y)  # folium 중심 좌표(lon/lat)
-
-    # =========================================================
-    # 1) Folium 지도 기본 틀(경계/비커버/신규정류소/반경/버스정류장)  # 섹션 설명 주석
-    # =========================================================
-
-    m = folium.Map(location=[lat, lon], zoom_start=14, tiles="cartodbpositron")  # Folium 지도 생성(토큰 불필요)
-
-    folium.GeoJson(  # 남현동 경계 폴리곤 레이어
-        gdf_namhyeon.to_crs(MAP_CRS),  # 4326 변환
-        name="남현동 경계",  # 레이어명
-        style_function=lambda x: {"color": "#000000", "weight": 3, "fillOpacity": 0.02},  # 스타일
-    ).add_to(m)  # 지도에 추가
-
-    if len(gdf_unc) > 0:  # 비커버 데이터가 있으면
-        unc_ll = gpd.GeoSeries(  # 남현동 내부 비커버만 남기기 위한 GeoSeries
-            [gdf_unc.geometry.union_all().intersection(nam_union)],  # 남현동과 교집합만
-            crs=TARGET_CRS,  # 분석 CRS
-        ).to_crs(MAP_CRS).iloc[0]  # 4326 변환
-        folium.GeoJson(  # 비커버 레이어 추가
-            {"type": "Feature", "properties": {}, "geometry": unc_ll.__geo_interface__},  # GeoJSON
-            name="비커버(남현동)",  # 레이어명
-            style_function=lambda x: {"color": "#ff0000", "weight": 2, "fillOpacity": 0.10},  # 스타일(빨강)
-        ).add_to(m)  # 지도에 추가
-
-    folium.Marker(  # 신규 따릉이 정류장 마커
-        location=[lat, lon],  # 위치
-        tooltip=f"신규 따릉이 정류장(가정): gid={sel_gid}",  # 툴팁
-        icon=folium.Icon(color="green", icon="bicycle", prefix="fa"),  # 아이콘(따릉이)
-    ).add_to(m)  # 지도에 추가
-
-    station_buf_ll = gpd.GeoSeries([station_buffer_5179], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]  # 신규 커버 반경(4326)
-    folium.GeoJson(  # 신규 커버 반경 레이어
-        {"type": "Feature", "properties": {}, "geometry": station_buf_ll.__geo_interface__},  # GeoJSON
-        name="신규 커버 반경",  # 레이어명
-        style_function=lambda x: {"color": "#00aa00", "weight": 2, "fillOpacity": 0.03},  # 스타일(초록)
-    ).add_to(m)  # 지도에 추가
-
-    #  버스정류장 마커(남현동 내부 전체)  # 섹션 설명 주석
-    gdf_bus_nam_ll = gdf_bus_nam.to_crs(MAP_CRS).copy()  # 남현동 버스정류장을 4326으로 변환
-    for ars, nm, typ, geom in zip(  # 버스정류장을 순회
-        gdf_bus_nam_ll["ARS_ID"].tolist(),  # 정류장 ID
-        gdf_bus_nam_ll["정류소명"].tolist(),  # 정류소명
-        gdf_bus_nam_ll["정류소타입"].tolist(),  # 정류소타입
-        gdf_bus_nam_ll.geometry.tolist(),  # 포인트 geometry
-    ):
-        folium.Marker(  # 버스정류장 마커
-            location=[float(geom.y), float(geom.x)],  # 위도/경도
-            tooltip=f"버스정류장 | ARS_ID={ars} | {nm} | {typ}",  # 툴팁 텍스트
-            icon=folium.Icon(color="blue", icon="bus", prefix="fa"),  # 버스 아이콘
-        ).add_to(m)  # 지도에 추가
-
-    # =========================================================
-    # 2)  신규 경로(최종 요구사항 반영)  # 섹션 설명 주석
-    # - "반경 내 버스정류장"이 있을 때만 경로를 만든다  # 설명 주석
-    # - 반경 내 정류장들 각각에 대해  # 설명 주석
-    #   신규 따릉이 정류소 → 버스정류장 최단경로들을 표시한다  # 설명 주석
-    # - 반경 내 정류장이 없으면 신규 경로는 표시하지 않는다  # 설명 주석
-    # =========================================================
-
-    gdf_bus_in_radius = gdf_bus_nam[gdf_bus_nam.geometry.intersects(station_buffer_5179)].copy()  #  반경(5179) 내 버스정류장만 추출
-
-    if len(gdf_bus_in_radius) == 0:  # 반경 내 버스정류장이 없으면
-        pass  #  신규 경로는 표시하지 않음(요구사항)
-    else:  # 반경 내 버스정류장이 있으면
-        try:  # 네트워크/경로 계산 전체를 try로 감싸 지도 표시 자체는 유지
-            ox.settings.log_console = False  # OSMnx 로그 끄기(콘솔 출력 최소화)
-
-            #  신규 따릉이 정류소(지도 중심점) 기준으로 도보 네트워크 그래프 다운로드  # 설명 주석
-            G = ox.graph_from_point(  # OSM 그래프 생성
-                (lat, lon),  # 중심점(lat, lon)
-                dist=int(GRAPH_DIST_M),  # 다운로드 반경(미터)
-                network_type="walk",  # 도보 네트워크
-                simplify=True,  # 그래프 단순화
-            )  # G 생성 끝
-
-            #  엣지 길이(length) 속성 추가(OSMnx 버전별 API 대응)  # 설명 주석
-            try:  # OSMnx 2.x
-                G = ox.distance.add_edge_lengths(G)  # length 추가
-            except Exception:  # OSMnx 1.x
-                G = ox.add_edge_lengths(G)  # length 추가
-
-            #  그래프를 미터 CRS로 투영(거리/시간 계산 안정화)  # 설명 주석
-            Gp = ox.project_graph(G)  # 투영 그래프
-
-            #  신규 따릉이 정류소(중심점)를 그래프 CRS로 변환한 뒤 최근접 노드 추출  # 설명 주석
-            pt_proj = gpd.GeoSeries([Point(lon, lat)], crs=MAP_CRS).to_crs(Gp.graph["crs"]).iloc[0]  # 중심점을 그래프 CRS로
-            px, py = float(pt_proj.x), float(pt_proj.y)  # 투영 좌표
-            source_node = ox.distance.nearest_nodes(Gp, X=px, Y=py)  # 출발 노드(최근접)
-
-            #  최단경로 가중치로 쓸 travel_time(초)을 모든 엣지에 부여  # 설명 주석
-            for u, v, k, data in Gp.edges(keys=True, data=True):  # 모든 엣지 순회
-                data["travel_time"] = float(data.get("length", 0.0)) / float(WALK_SPEED_MPS)  # time(s)=length(m)/speed(m/s)
-
-            #  반경 내 버스정류장을 그래프 CRS로 투영 후, 각 정류장 최근접 노드 추출  # 설명 주석
-            bus_pts_proj = gdf_bus_in_radius.to_crs(Gp.graph["crs"]).copy()  # 정류장 투영
-            bus_nodes = []  # 정류장 노드 리스트
-            for p in bus_pts_proj.geometry.tolist():  # 정류장 포인트 순회
-                bn = ox.distance.nearest_nodes(Gp, X=float(p.x), Y=float(p.y))  # 정류장 최근접 노드
-                bus_nodes.append(int(bn))  # 정수로 저장
-
-            #  신규 따릉이 정류소 → 반경 내 버스정류장 최단경로를 모두 생성  # 설명 주석
-            link_features = []  # 경로 feature 리스트
-            max_routes = 80  # 데모 렌더링 성능을 위한 상한(원하면 늘려도 됨)
-
-            for bn in bus_nodes[:max_routes]:  # 반경 내 정류장 노드 순회(상한 적용)
-                try:  # 개별 경로 실패가 전체 실패로 번지지 않게 방어
-                    route = nx.shortest_path(Gp, int(source_node), int(bn), weight="travel_time")  # travel_time 기준 최단경로(노드열)
-                    line = LineString([(float(Gp.nodes[n]["x"]), float(Gp.nodes[n]["y"])) for n in route])  # 노드열→LineString
-                    line_ll = gpd.GeoSeries([line], crs=Gp.graph["crs"]).to_crs(MAP_CRS).iloc[0]  # 표시용 4326 변환
-                    link_features.append({"type": "Feature", "properties": {}, "geometry": line_ll.__geo_interface__})  # feature 추가
-                except Exception:  # 연결 불가(그래프 단절 등) 케이스
-                    continue  # 해당 정류장은 스킵
-
-            if len(link_features) > 0:  # 경로가 하나라도 있으면
-                folium.GeoJson(  # 신규→버스정류장 연결경로 레이어
-                    {"type": "FeatureCollection", "features": link_features},  # GeoJSON FeatureCollection
-                    name="신규→반경내 버스정류장 최단경로",  # 레이어명
-                    style_function=lambda x: {"color": "#ff9900", "weight": 4, "opacity": 0.85},  # 스타일(주황)
-                ).add_to(m)  # 지도에 추가
-            else:  # 반경 내 정류장은 있지만 경로가 0개면
-                pass  # 표시할 경로가 없으므로 아무 것도 추가하지 않음
-
-        except Exception as e:  # 네트워크/라우팅 실패 시
-            st.warning(f"OSMnx/NetworkX 경로 계산이 실패했습니다. (지도는 정상 표시) | 에러: {type(e).__name__}: {e}")  # 경고 출력
-
-    # =========================================================
-    # 3)  기존 경로(routes_all.gpkg)  # 섹션 설명 주석
-    # - 모든 레이어/칼럼을 읽어도 최종은 geometry만 남겨서  # 설명 주석
-    # - '기존 커버 경로' 1개 레이어로만 표시  # 설명 주석
-    # =========================================================
-
-    gdf_routes_all = None  # 합쳐진 결과를 담을 변수
-
-    if os.path.exists(ROUTES_ALL_GPKG):  # 파일이 있으면
-        try:  # 레이어 목록 확인 시도
-            layers = fiona.listlayers(ROUTES_ALL_GPKG)  # 레이어 이름 리스트
-        except Exception:  # 실패하면(환경에 따라 fiona listlayers 실패 가능)
-            layers = [None]  # 레이어 미지정으로 한 번만 읽기
-
-        gdfs = []  # 레이어별 GeoDataFrame 담기
-        for lyr in layers:  # 레이어를 순회
-            try:  # 레이어별 로드 실패 방어
-                gdf_tmp = gpd.read_file(ROUTES_ALL_GPKG, layer=lyr) if lyr else gpd.read_file(ROUTES_ALL_GPKG)  # 레이어별 로드
-                if gdf_tmp is None or len(gdf_tmp) == 0:  # 비어있으면
-                    continue  # 스킵
-                if gdf_tmp.crs is None:  # CRS가 없으면
-                    gdf_tmp = gdf_tmp.set_crs(TARGET_CRS)  # 5179로 가정(데모 기준)
-                gdf_tmp = gdf_tmp[["geometry"]].copy()  #  geometry만 남김(스키마 충돌 제거)
-                gdfs.append(gdf_tmp)  # 리스트에 추가
-            except Exception:  # 읽기 실패하면
-                continue  # 다음 레이어로
-
-        if len(gdfs) > 0:  # 하나라도 있으면
-            gdf_routes_all = pd.concat(gdfs, ignore_index=True)  # 모두 합치기
-            gdf_routes_all = gpd.GeoDataFrame(gdf_routes_all, geometry="geometry", crs=gdfs[0].crs)  # GeoDataFrame 보정
-            gdf_routes_all = gdf_routes_all.to_crs(MAP_CRS)  # 4326 변환(표시용)
-
-            folium.GeoJson(  # 기존 커버 경로 레이어(1개만)
-                gdf_routes_all,  # 합쳐진 경로
-                name="기존 커버 경로",  # 레이어명
-                style_function=lambda x: {"color": "#7a7a7a", "weight": 5, "opacity": 0.70},  # 스타일(회색)
-            ).add_to(m)  # 지도에 추가
-    else:  # 파일이 없으면
-        st.info("routes_all.gpkg 파일이 없어 기존 커버 경로를 표시하지 않습니다.")  # 안내 출력
-
-    # =========================================================
-    # 4) 레이어 컨트롤 + 출력  # 섹션 설명 주석
-    # =========================================================
-
-    folium.LayerControl(collapsed=False).add_to(m)  # 레이어 컨트롤 추가(펼친 상태)
-    st_folium(m, width=None, height=MAP_HEIGHT_PX, key=f"folium_{sel_gid}")  # Folium 지도 출력(우측)
+def _add_stops(m, bus_ll, sub_ll):
+    """버스/지하철 마커를 지도에 추가"""
+    for _, r in bus_ll.iterrows():
+        folium.CircleMarker(
+            location=[r.geometry.y, r.geometry.x],
+            radius=4, color="#0066ff", fill=True, fill_opacity=0.8,
+            tooltip=f"버스정류장 | {r.get('정류소명', '')}",
+        ).add_to(m)
+    for _, r in sub_ll.iterrows():
+        folium.CircleMarker(
+            location=[r.geometry.y, r.geometry.x],
+            radius=6, color="#ff6600", fill=True, fill_opacity=0.9,
+            tooltip="지하철역",
+        ).add_to(m)
 
 
+def create_buffer_map(d):
+    m = folium.Map(location=d["center"], zoom_start=14, tiles="cartodbpositron")
+
+    folium.GeoJson(
+        d["nam_ll"], name="행정동 경계",
+        style_function=lambda x: {"fillOpacity": 0.03, "color": "#444", "weight": 3},
+    ).add_to(m)
+
+    if d["cover_buf_ll"]:
+        folium.GeoJson(
+            mapping(d["cover_buf_ll"]), name="커버 영역 (직선 버퍼)",
+            style_function=lambda x: {"fillOpacity": 0.25, "fillColor": "#28a745", "color": "#28a745", "weight": 1},
+        ).add_to(m)
+
+    if d["uncov_buf_ll"]:
+        folium.GeoJson(
+            mapping(d["uncov_buf_ll"]), name="비커버 영역 (직선 버퍼)",
+            style_function=lambda x: {"fillOpacity": 0.35, "fillColor": "#cc0000", "color": "#cc0000", "weight": 2},
+        ).add_to(m)
+
+    _add_stops(m, d["bus_ll"], d["sub_ll"])
+    folium.LayerControl(collapsed=False).add_to(m)
+    b = d["bounds"]
+    m.fit_bounds([[b[1], b[0]], [b[3], b[2]]])
+    return m
+
+
+def create_isochrone_map(d):
+    m = folium.Map(location=d["center"], zoom_start=14, tiles="cartodbpositron")
+
+    folium.GeoJson(
+        d["nam_ll"], name="행정동 경계",
+        style_function=lambda x: {"fillOpacity": 0.03, "color": "#444", "weight": 3},
+    ).add_to(m)
+
+    if d["cover_iso_ll"]:
+        folium.GeoJson(
+            mapping(d["cover_iso_ll"]), name="커버 영역 (네트워크 Isochrone)",
+            style_function=lambda x: {"fillOpacity": 0.20, "fillColor": "#0066ff", "color": "#0066ff", "weight": 1},
+        ).add_to(m)
+
+    if d["uncov_iso_ll"]:
+        folium.GeoJson(
+            mapping(d["uncov_iso_ll"]), name="비커버 영역 (네트워크 Isochrone)",
+            style_function=lambda x: {"fillOpacity": 0.30, "fillColor": "#7a00cc", "color": "#7a00cc", "weight": 2},
+        ).add_to(m)
+
+    _add_stops(m, d["bus_ll"], d["sub_ll"])
+    folium.LayerControl(collapsed=False).add_to(m)
+    b = d["bounds"]
+    m.fit_bounds([[b[1], b[0]], [b[3], b[2]]])
+    return m
+
+# =========================================================
+# 4) 메인 레이아웃
+# =========================================================
+
+with st.spinner("OSM 도보 네트워크 다운로드 및 Isochrone 계산 중..."):
+    data = compute_all()
+
+k = data["kpi"]
+
+# ── KPI ──
+st.markdown("---")
+st.subheader("KPI 비교")
+
+c1, c2, c3, c4 = st.columns(4)
+
+with c1:
+    st.metric(
+        label="비커버 면적",
+        value=f"{k['iso_uncov_km2']:.3f} km\u00b2",
+        delta=f"{k['iso_uncov_km2'] - k['buf_uncov_km2']:+.3f} km\u00b2 (네트워크 \u2212 버퍼)",
+        delta_color="inverse",
+    )
+
+with c2:
+    st.metric(
+        label="비커버 인구",
+        value=f"{k['iso_uncov_pop']:,.0f} 명",
+        delta=f"{k['iso_uncov_pop'] - k['buf_uncov_pop']:+,.0f} 명",
+        delta_color="inverse",
+    )
+
+with c3:
+    st.metric(
+        label="비커버 비율",
+        value=f"{k['iso_ratio']:.1%}",
+        delta=f"{(k['iso_ratio'] - k['buf_ratio'])*100:+.1f} %p",
+        delta_color="inverse",
+    )
+
+with c4:
+    st.metric(
+        label="추가 발견 비커버 인구",
+        value=f"{k['additional_pop']:,.0f} 명",
+        help="직선 버퍼로는 커버된 것처럼 보이지만, 실제 도보 네트워크로는 도달 불가능한 인구",
+    )
+
+# ── 좌/우 지도 ──
+st.markdown("---")
+col_l, col_r = st.columns(2, gap="large")
+
+with col_l:
+    st.subheader("직선 버퍼 기반 분석")
+    st_folium(create_buffer_map(data), width=None, height=MAP_HEIGHT_PX, key="map_buf", returned_objects=[])
+
+with col_r:
+    st.subheader("네트워크(Isochrone) 기반 분석")
+    st_folium(create_isochrone_map(data), width=None, height=MAP_HEIGHT_PX, key="map_iso", returned_objects=[])
+
+# ── 방법론 비교 ──
+with st.expander("분석 방법론 비교"):
+    st.markdown(
+        """
+| 항목 | 직선 버퍼 | 네트워크 기반 (Isochrone) |
+|------|-----------|--------------------------|
+| **방식** | 정류장 중심 원형 버퍼 (300 m / 500 m) | OSMnx 도보 네트워크 ego_graph + 도로 폭 25 m 버퍼 |
+| **장점** | 계산 빠름, 직관적 | 실제 보행 가능 경로 반영 |
+| **단점** | 건물/하천/도로 등 장애물 미반영 | OSM 네트워크 다운로드 필요, 계산 시간 |
+| **비커버 판단** | 원 바깥 = 비커버 | 도보로 도달 불가 = 비커버 |
+        """
+    )
