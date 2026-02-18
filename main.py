@@ -35,7 +35,10 @@ EDGE_BUFFER_M  = 25.0
 WALK_5MIN_M    = 5 * 60 * 1.4   # 420m
 
 MAP_HEIGHT_PX = 650
-MAX_ROUTES_PER_TOPGRID = 10
+
+# TOP격자에서 “5분 이내 도달 가능한 정류장/역” 경로를 몇 개까지 그릴지
+MAX_ROUTES_PER_TOPGRID_BUS = 30
+MAX_ROUTES_PER_TOPGRID_SUB = 30
 
 # =========================================================
 # 1) 페이지 설정
@@ -55,7 +58,7 @@ st.markdown(
 )
 
 st.title("대중교통 커버리지 분석: 직선 버퍼 vs 네트워크 기반")
-st.caption("버스 300 m / 지하철 500 m 기준 · TOP 격자→버스정류장 5분 최단경로 표시")
+st.caption("버스 300 m / 지하철 500 m 기준 · TOP 격자→(버스/지하철) 5분 최단경로 표시")
 
 # =========================================================
 # 2) 드롭다운(행정동 선택)
@@ -147,7 +150,7 @@ with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 �
     uncov_buf = sel_union.difference(cover_buf) if cover_buf else sel_union
 
     # =========================================================
-    # 5) (B) 네트워크(Isochrone) 커버/비커버 + TOP격자→버스정류장 5분 최단경로
+    # 5) (B) 네트워크(Isochrone) 커버/비커버 + TOP격자→(버스/지하철) 경로
     # =========================================================
     poly_graph_ll = (
         gpd.GeoSeries([sel_union.buffer(GRAPH_BUFFER_M)], crs=TARGET_CRS)
@@ -165,6 +168,11 @@ with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 �
     bus_nodes = []
     if len(bus_ll) > 0:
         bus_nodes = list(ox.distance.nearest_nodes(G, X=bus_ll.geometry.x.values, Y=bus_ll.geometry.y.values))
+
+    # [ADD] 지하철 노드도 만들기
+    sub_nodes = []
+    if len(sub_ll) > 0:
+        sub_nodes = list(ox.distance.nearest_nodes(G, X=sub_ll.geometry.x.values, Y=sub_ll.geometry.y.values))
 
     # (B-1) isochrone 커버리지(정류장 기준 300/500m)
     gdf_bus_sel2 = gdf_bus_sel.copy()
@@ -236,22 +244,31 @@ with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 �
             top_iso = cands.loc[cands["pop"].idxmax()].copy()
 
     # =========================================================
-    # 7) TOP 격자 중심점 → 버스정류장 5분 최단경로
+    # 7) TOP 격자 중심점 → (버스/지하철) 5분 최단경로 “전부” 그리기
     # =========================================================
-    routes_top_buf = []
-    routes_top_iso = []
+    # 버퍼 TOP 격자 경로들
+    routes_top_buf_bus = []
+    routes_top_buf_sub = []
 
-    if top_buf is not None and len(bus_nodes) > 0:
+    # 네트워크 TOP 격자 경로들
+    routes_top_iso_bus = []
+    routes_top_iso_sub = []
+
+    # ---- 버퍼 TOP 격자 → 버스/지하철 ----
+    if top_buf is not None:
         top_buf_cent_ll = gpd.GeoSeries([top_buf["centroid_m"]], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
         src = ox.distance.nearest_nodes(G, X=float(top_buf_cent_ll.x), Y=float(top_buf_cent_ll.y))
 
+        # 5분 컷오프 내 노드 거리
         try:
             lengths = nx.single_source_dijkstra_path_length(G, src, cutoff=float(WALK_5MIN_M), weight="length")
-            reachable_bus = [(bn, lengths[bn]) for bn in bus_nodes if bn in lengths]
-            reachable_bus.sort(key=lambda x: x[1])
-            reachable_bus = reachable_bus[:MAX_ROUTES_PER_TOPGRID]
         except Exception:
-            reachable_bus = []
+            lengths = {}
+
+        # [BUS] 도달 가능한 버스노드 전체(거리순)
+        reachable_bus = [(bn, lengths[bn]) for bn in bus_nodes if bn in lengths]
+        reachable_bus.sort(key=lambda x: x[1])
+        reachable_bus = reachable_bus[:MAX_ROUTES_PER_TOPGRID_BUS]
 
         for bn, _dist in reachable_bus:
             try:
@@ -260,26 +277,49 @@ with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 �
                 if line is None or line.is_empty:
                     continue
                 if line.geom_type == "LineString":
-                    routes_top_buf.append(line)
+                    routes_top_buf_bus.append(line)
                 else:
                     parts = list(line.geoms)
                     parts.sort(key=lambda g: g.length if g else 0, reverse=True)
                     if parts and (not parts[0].is_empty):
-                        routes_top_buf.append(parts[0])
+                        routes_top_buf_bus.append(parts[0])
             except Exception:
                 continue
 
-    if top_iso is not None and len(bus_nodes) > 0:
+        # [SUB] 도달 가능한 지하철노드 전체(거리순)
+        reachable_sub = [(sn, lengths[sn]) for sn in sub_nodes if sn in lengths]
+        reachable_sub.sort(key=lambda x: x[1])
+        reachable_sub = reachable_sub[:MAX_ROUTES_PER_TOPGRID_SUB]
+
+        for sn, _dist in reachable_sub:
+            try:
+                path_nodes = nx.shortest_path(G, source=src, target=sn, weight="length")
+                line = ox.utils_graph.route_to_gdf(G, path_nodes, weight="length")["geometry"].unary_union
+                if line is None or line.is_empty:
+                    continue
+                if line.geom_type == "LineString":
+                    routes_top_buf_sub.append(line)
+                else:
+                    parts = list(line.geoms)
+                    parts.sort(key=lambda g: g.length if g else 0, reverse=True)
+                    if parts and (not parts[0].is_empty):
+                        routes_top_buf_sub.append(parts[0])
+            except Exception:
+                continue
+
+    # ---- 네트워크 TOP 격자 → 버스/지하철 ----
+    if top_iso is not None:
         top_iso_cent_ll = gpd.GeoSeries([top_iso["centroid_m"]], crs=TARGET_CRS).to_crs(MAP_CRS).iloc[0]
         src = ox.distance.nearest_nodes(G, X=float(top_iso_cent_ll.x), Y=float(top_iso_cent_ll.y))
 
         try:
             lengths = nx.single_source_dijkstra_path_length(G, src, cutoff=float(WALK_5MIN_M), weight="length")
-            reachable_bus = [(bn, lengths[bn]) for bn in bus_nodes if bn in lengths]
-            reachable_bus.sort(key=lambda x: x[1])
-            reachable_bus = reachable_bus[:MAX_ROUTES_PER_TOPGRID]
         except Exception:
-            reachable_bus = []
+            lengths = {}
+
+        reachable_bus = [(bn, lengths[bn]) for bn in bus_nodes if bn in lengths]
+        reachable_bus.sort(key=lambda x: x[1])
+        reachable_bus = reachable_bus[:MAX_ROUTES_PER_TOPGRID_BUS]
 
         for bn, _dist in reachable_bus:
             try:
@@ -288,12 +328,32 @@ with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 �
                 if line is None or line.is_empty:
                     continue
                 if line.geom_type == "LineString":
-                    routes_top_iso.append(line)
+                    routes_top_iso_bus.append(line)
                 else:
                     parts = list(line.geoms)
                     parts.sort(key=lambda g: g.length if g else 0, reverse=True)
                     if parts and (not parts[0].is_empty):
-                        routes_top_iso.append(parts[0])
+                        routes_top_iso_bus.append(parts[0])
+            except Exception:
+                continue
+
+        reachable_sub = [(sn, lengths[sn]) for sn in sub_nodes if sn in lengths]
+        reachable_sub.sort(key=lambda x: x[1])
+        reachable_sub = reachable_sub[:MAX_ROUTES_PER_TOPGRID_SUB]
+
+        for sn, _dist in reachable_sub:
+            try:
+                path_nodes = nx.shortest_path(G, source=src, target=sn, weight="length")
+                line = ox.utils_graph.route_to_gdf(G, path_nodes, weight="length")["geometry"].unary_union
+                if line is None or line.is_empty:
+                    continue
+                if line.geom_type == "LineString":
+                    routes_top_iso_sub.append(line)
+                else:
+                    parts = list(line.geoms)
+                    parts.sort(key=lambda g: g.length if g else 0, reverse=True)
+                    if parts and (not parts[0].is_empty):
+                        routes_top_iso_sub.append(parts[0])
             except Exception:
                 continue
 
@@ -370,11 +430,8 @@ with c4:
     )
 
 # =========================================================
-# 5) 지도 생성(스크립트)
-#    - 클러스터 없음
-#    - 버스/지하철 아이콘: FontAwesome
+# 5) 지도 생성(스크립트) - 클러스터 없음, 이쁜 아이콘
 # =========================================================
-
 def number_badge_html(n, bg):
     return f"""
     <div style="
@@ -412,7 +469,7 @@ def add_base_layers(m):
             icon=sub_icon,
         ).add_to(m)
 
-def add_top_and_routes(m, top_ll, routes, poly_color, label):
+def add_top_and_routes(m, top_ll, routes_bus, routes_sub, poly_color, label):
     if top_ll is not None and len(top_ll) > 0:
         r = top_ll.iloc[0]
         pop = float(r.get("pop", 0))
@@ -433,14 +490,27 @@ def add_top_and_routes(m, top_ll, routes, poly_color, label):
             icon=folium.DivIcon(html=number_badge_html(1, poly_color)),
         ).add_to(m)
 
-    if routes is not None and len(routes) > 0:
-        fg = folium.FeatureGroup(name="TOP 격자→버스 5분 최단경로", show=True)
-        for ls in routes:
+    # [BUS] TOP 격자 → 버스정류장 경로들
+    if routes_bus is not None and len(routes_bus) > 0:
+        fg = folium.FeatureGroup(name="TOP→버스(5분) 경로", show=True)
+        for ls in routes_bus:
             if ls is None or ls.is_empty:
                 continue
             folium.PolyLine(
                 [(y, x) for x, y in ls.coords],
-                weight=4, opacity=0.85, color="#111111",
+                weight=4, opacity=0.80, color="#111111",
+            ).add_to(fg)
+        fg.add_to(m)
+
+    # [SUB] TOP 격자 → 지하철역 경로들
+    if routes_sub is not None and len(routes_sub) > 0:
+        fg = folium.FeatureGroup(name="TOP→지하철(5분) 경로", show=True)
+        for ls in routes_sub:
+            if ls is None or ls.is_empty:
+                continue
+            folium.PolyLine(
+                [(y, x) for x, y in ls.coords],
+                weight=4, opacity=0.80, color="#6a00ff",
             ).add_to(fg)
         fg.add_to(m)
 
@@ -462,7 +532,11 @@ if uncov_buf_ll is not None and (not uncov_buf_ll.is_empty):
         style_function=lambda x: {"fillOpacity": 0.32, "fillColor": "#cc0000", "color": "#cc0000", "weight": 2},
     ).add_to(m_buf)
 
-add_top_and_routes(m_buf, top_buf_ll, routes_top_buf, poly_color="#ff6600", label="버퍼 비커버 최대인구")
+add_top_and_routes(
+    m_buf, top_buf_ll,
+    routes_bus=routes_top_buf_bus, routes_sub=routes_top_buf_sub,
+    poly_color="#ff6600", label="버퍼 비커버 최대인구"
+)
 folium.LayerControl(collapsed=False).add_to(m_buf)
 m_buf.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
 
@@ -484,7 +558,11 @@ if uncov_iso_ll is not None and (not uncov_iso_ll.is_empty):
         style_function=lambda x: {"fillOpacity": 0.28, "fillColor": "#7a00cc", "color": "#7a00cc", "weight": 2},
     ).add_to(m_iso)
 
-add_top_and_routes(m_iso, top_iso_ll, routes_top_iso, poly_color="#e91e63", label="네트워크 비커버 최대인구")
+add_top_and_routes(
+    m_iso, top_iso_ll,
+    routes_bus=routes_top_iso_bus, routes_sub=routes_top_iso_sub,
+    poly_color="#e91e63", label="네트워크 비커버 최대인구"
+)
 folium.LayerControl(collapsed=False).add_to(m_iso)
 m_iso.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
 
@@ -511,6 +589,6 @@ with st.expander("분석 방법론 비교"):
 | 장점 | 계산 빠름, 직관적 | 실제 보행 경로 반영 + 경로 복원 가능 |
 | 단점 | 장애물/단절 미반영 | OSM 다운로드/계산 필요 |
 | 비커버 판단 | 원 바깥 = 비커버 | 도보 네트워크로 도달 불가 = 비커버 |
-| TOP 격자 경로 | TOP 격자 중심→버스정류장 5분 최단경로 표시 | TOP 격자 중심→버스정류장 5분 최단경로 표시 |
+| TOP 격자 경로 | TOP→버스/지하철 5분 최단경로 표시 | TOP→버스/지하철 5분 최단경로 표시 |
         """
     )
