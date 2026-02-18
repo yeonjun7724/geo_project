@@ -159,7 +159,7 @@ with st.spinner("데이터 로드/분석 중... (OSM 네트워크 다운로드 �
     )
 
     ox.settings.log_console = False
-    G = ox.graph_from_polygon(poly_graph_ll, network_type="walk", simplify=True)
+    G = ox.graph_from_polygon(poly_graph_ll, network_type="drive", simplify=True)
 
     # 버스/지하철 노드 매핑(4326)
     bus_ll = gdf_bus_sel.to_crs(MAP_CRS).copy()
@@ -592,6 +592,7 @@ with st.expander("분석 방법론 비교"):
 | TOP 격자 경로 | TOP→버스/지하철 5분 최단경로 표시 | TOP→버스/지하철 5분 최단경로 표시 |
         """
     )
+
 
 
 
