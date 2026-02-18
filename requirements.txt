@@ -10,3 +10,4 @@ shapely
 openpyxl
 fiona
 pyproj
+scikit-learn
